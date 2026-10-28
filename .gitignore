@@ -13,3 +13,4 @@ data/*
 .DS_Store
 src/output/*
 !src/output/.gitkeep
+*.ipynb
