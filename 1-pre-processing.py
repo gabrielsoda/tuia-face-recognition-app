@@ -553,3 +553,251 @@ for ident in kept:
 
 balanced = pl.concat(balanced_parts).sort(["identity", "path"])
 print(f"Subset balanceado: {balanced['identity'].n_unique()} identidades × {MAX_PER_ID} = {balanced.height} imágenes")
+
+# %% [markdown]
+# ## Clustering exploratorio
+#
+# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales para detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
+
+# %%
+from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
+
+# Cargamos ArcFace (reconocimiento + detección ya está en buffalo_l)
+face_analysis = FaceAnalysis(
+    name="buffalo_l",
+    providers=["CPUExecutionProvider"],
+)
+face_analysis.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
+
+# Extraemos embeddings sobre `accepted` (ya tienen exactamente 1 rostro)
+embedding_records = []
+for row in accepted.iter_rows(named=True):
+    image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
+    if image_bgr is None:
+        continue
+    faces = face_analysis.get(image_bgr)
+    if len(faces) == 1:
+        emb = faces[0].embedding
+        embedding_records.append({
+            "path": row["path"],
+            "identity": row["identity"],
+            "embedding": emb,
+        })
+
+embeddings_df = pl.from_dicts(embedding_records)
+X = np.vstack(embeddings_df["embedding"].to_list())
+y = embeddings_df["identity"].to_list()
+print(f"Embeddings extraídos: {len(y)} imágenes de {embeddings_df['identity'].n_unique()} identidades")
+
+# t-SNE
+n_samples = min(2000, X.shape[0])
+tsne_idx = np.random.RandomState(42).choice(X.shape[0], n_samples, replace=False)
+X_tsne = TSNE(n_components=2, random_state=42, perplexity=30, init="pca", learning_rate="auto").fit_transform(X[tsne_idx])
+
+# K-Means con k = n identidades
+n_clusters = embeddings_df["identity"].n_unique()
+kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit(X)
+labels_km = kmeans.labels_
+
+ari = adjusted_rand_score(y, labels_km)
+nmi = normalized_mutual_info_score(y, labels_km)
+sil = silhouette_score(X, labels_km)
+
+metrics = pl.DataFrame({
+    "métrica": ["ARI (K-Means vs identidad)", "NMI (K-Means vs identidad)", "Silhouette (K-Means)"],
+    "valor": [round(ari, 3), round(nmi, 3), round(sil, 3)],
+})
+display(metrics)
+
+# Plot t-SNE con Altair
+tsne_data = pl.DataFrame({
+    "x": X_tsne[:, 0],
+    "y": X_tsne[:, 1],
+    "identity": [y[i] for i in tsne_idx],
+    "kmeans_label": [int(labels_km[i]) for i in tsne_idx],
+})
+
+scatter = alt.Chart(tsne_data.to_dicts()).mark_circle(size=30, opacity=0.6).encode(
+    x=alt.X("x:Q", title="t-SNE 1"),
+    y=alt.Y("y:Q", title="t-SNE 2"),
+    color=alt.Color("identity:N", title="Identidad", scale=alt.Scale(scheme="category20")),
+    tooltip=["identity:N"],
+).properties(width=550, height=450, title="t-SNE de embeddings ArcFace (coloreado por identidad)")
+
+display(scatter)
+
+# %% [markdown]
+# ### Interpretación del clustering
+#
+# - **ARI y NMI cercanos a 1** indican que los embeddings ya separan bien las identidades.
+# - **Silhouette** cuantifica qué tan cohesionados están los clusters.
+# - Identidades que se mezclan en el t-SNE suelen ser personas con parecido facial real o condiciones de captura similares (iluminación, pose).
+# - Outliers (puntos lejos de su grupo) pueden ser errores de etiquetado o imágenes de muy baja calidad.
+
+# %% [markdown]
+# ## Data augmentation
+#
+# Definimos un pipeline con `albumentations` acorde al dominio facial. Incluimos transformaciones que ocurren en el mundo real y **excluimos** las que destruyen la identidad (flip vertical, rotaciones de 90°).
+
+# %%
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+augmentation_pipeline = A.Compose([
+    A.HorizontalFlip(p=0.5),                         # simétrico en rostros (común en datasets)
+    A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.5),  # pequeñas variaciones de pose
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),   # iluminación variable
+    A.OneOf([
+        A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+        A.MotionBlur(blur_limit=3, p=1.0),
+    ], p=0.3),                                        # desenfoque leve (cámara, movimiento)
+    A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),      # ruido de sensor
+    A.ImageCompression(quality_lower=70, quality_upper=95, p=0.2),  # compresión JPEG
+    A.CoarseDropout(max_holes=3, max_height=16, max_width=16, min_holes=1, p=0.2),  # oclusiones parciales
+])
+
+# Grilla: una imagen + 8 aumentaciones
+def show_augmentations(image_path, n=8):
+    img = cv2.imread(str(image_path))
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    fig, axes = plt.subplots(1, n + 1, figsize=(3 * (n + 1), 3))
+    axes[0].imshow(img_rgb)
+    axes[0].set_title("Original")
+    axes[0].axis("off")
+    for i in range(n):
+        aug = augmentation_pipeline(image=img)["image"]
+        axes[i + 1].imshow(cv2.cvtColor(aug, cv2.COLOR_BGR2RGB) if aug.shape[-1] == 3 else aug)
+        axes[i + 1].set_title(f"Aug {i+1}")
+        axes[i + 1].axis("off")
+    fig.suptitle("Pipeline de augmentation", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+sample_img = accepted.sample(n=1, seed=42)["path"].to_list()[0]
+show_augmentations(DATA_DIR / sample_img)
+
+# %% [markdown]
+# ### Justificación de transformaciones
+#
+# | Transformación | ¿Incluida? | Justificación |
+# |---|---|---|
+# | Horizontal flip | ✅ | Rostros son aproximadamente simétricos; duplica datos sin destruir identidad. |
+# | Rotación ±10° | ✅ | Variación natural de pose (inclinación de cabeza). |
+# | Flip vertical | ❌ | No ocurre en la realidad; destruye identidad. |
+# | Rotación 90° | ❌ | No ocurre en uso real de la app. |
+# | Brillo/contraste | ✅ | Cambios de iluminación entre ambientes. |
+# | Blur / ruido | ✅ | Desenfoque de cámara o baja luz. |
+# | Coarse dropout | ✅ | Simula oclusiones (gafas, pelo, mano). |
+# | JPEG compression | ✅ | Artefactos de compresión comunes en imágenes web. |
+#
+# La augmentation se aplica **solo en entrenamiento**. Validación y test usan la imagen original alineada.
+
+# %% [markdown]
+# ## Partición de datos (splits)
+#
+# Dividimos en **train / validation / test** estratificados por identidad. Como el objetivo final es **open-set** (verificación con personas no vistas en entrenamiento), esta partición inicial es **closed-set** para entrenar la CNN custom: las mismas identidades aparecen en los tres splits, con imágenes distintas. El escenario open-set se evaluará en la notebook `2-train.ipynb`.
+#
+# Proporciones: **70% train / 15% validation / 15% test**.
+# Semilla fija (`SEED = 42`) y guardado en CSV para reproducibilidad.
+
+# %%
+from sklearn.model_selection import train_test_split
+import json
+
+SEED = 42
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
+
+# Estratificado por identidad sobre `balanced`
+identities = balanced["identity"].unique().to_list()
+train_ids, temp_ids = train_test_split(
+    identities, test_size=(1 - TRAIN_RATIO), random_state=SEED, stratify=None
+)
+val_ids, test_ids = train_test_split(
+    temp_ids, test_size=(TEST_RATIO / (VAL_RATIO + TEST_RATIO)), random_state=SEED, stratify=None
+)
+
+train_df = balanced.filter(pl.col("identity").is_in(train_ids))
+val_df = balanced.filter(pl.col("identity").is_in(val_ids))
+test_df = balanced.filter(pl.col("identity").is_in(test_ids))
+
+# Verificación: imágenes únicas por split
+train_paths = set(train_df["path"].to_list())
+val_paths = set(val_df["path"].to_list())
+test_paths = set(test_df["path"].to_list())
+
+leak_train_val = len(train_paths & val_paths)
+leak_train_test = len(train_paths & test_paths)
+leak_val_test = len(val_paths & test_paths)
+
+split_summary = pl.DataFrame({
+    "split": ["train", "val", "test", "total"],
+    "identidades": [
+        train_df["identity"].n_unique(),
+        val_df["identity"].n_unique(),
+        test_df["identity"].n_unique(),
+        balanced["identity"].n_unique(),
+    ],
+    "imagenes": [train_df.height, val_df.height, test_df.height, balanced.height],
+    "imgs_por_identidad": [
+        round(train_df.height / train_df["identity"].n_unique(), 1),
+        round(val_df.height / val_df["identity"].n_unique(), 1),
+        round(test_df.height / test_df["identity"].n_unique(), 1),
+        round(balanced.height / balanced["identity"].n_unique(), 1),
+    ],
+})
+
+print("=== Splits ===")
+display(split_summary)
+print(f"Fuga train↔val: {leak_train_val}, train↔test: {leak_train_test}, val↔test: {leak_val_test}")
+assert leak_train_val == 0 and leak_train_test == 0 and leak_val_test == 0, "Fuga de datos detectada"
+
+# Guardar splits
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+train_df.select(["path", "identity"]).write_csv(OUTPUT_DIR / "train.csv")
+val_df.select(["path", "identity"]).write_csv(OUTPUT_DIR / "val.csv")
+test_df.select(["path", "identity"]).write_csv(OUTPUT_DIR / "test.csv")
+
+with open(OUTPUT_DIR / "split_info.json", "w", encoding="utf-8") as f:
+    json.dump({
+        "seed": SEED,
+        "ratios": {"train": TRAIN_RATIO, "val": VAL_RATIO, "test": TEST_RATIO},
+        "identities": {"train": train_ids, "val": val_ids, "test": test_ids},
+    }, f, indent=2)
+
+print(f"Splits guardados en {OUTPUT_DIR}/")
+
+# %% [markdown]
+# ## Ética, privacidad y licencias
+#
+# ### Dataset
+# Usamos **Pins Face Recognition** (Kaggle), un dataset de imágenes públicas de celebridades. Las imágenes provienen de fuentes web públicas; verificamos que el uso es para fines de investigación/académicos, consistente con el propósito de este trabajo.
+#
+# ### Sesgos
+# El dataset está compuesto principalmente por celebridades occidentales. Esto introduce sesgos demográficos notables:
+# - **Género**: predominio femenino (TODO calcular proporción exacta).
+# - **Edad**: adultos jóvenes predominantes.
+# - **Tono de piel**: infra-representación de tonos oscuros.
+#
+# Estos sesgos impactan directamente en el desempeño: un modelo entrenado solo con este dataset tendrá **menor accuracy al reconocer personas fuera de estas distribuciones demográficas**.
+#
+# TODO revisar bien esto:
+# ### Marco legal
+# Los rostros son **datos biométricos sensibles** según la **Ley 25.326 de Protección de Datos Personales** (Argentina). El reconocimiento facial implica riesgos de:
+# - **Vigilancia masiva** sin consentimiento.
+# - **Sesgos algorítmicos** que amplían discriminación existente.
+# - **Falsos positivos** que pueden llevar a identificaciones erróneas.
+#
+# Para un despliegue real de esta aplicación sería obligatorio:
+# 1. Obtener **consentimiento informado explícito** de cada persona registrada.
+# 2. Documentar el propósito específico del tratamiento de los datos biométricos.
+# 3. Garantizar el derecho al olvido (eliminación de embeddings y fotos).
+# 4. Auditar el desempeño por subgrupos demográficos.
+#
+# ### Licencias de modelos preentrenados
+# Los modelos de InsightFace (ArcFace, buffalo_l) se distribuyen bajo licencia de **uso no comercial / investigación**. Su uso en una aplicación comercial requeriría acuerdos de licenciamiento adicionales.
