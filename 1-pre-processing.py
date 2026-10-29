@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.1
 #   kernelspec:
 #     display_name: .venv
 #     language: python
@@ -212,7 +212,11 @@ res_chart = alt.Chart(alt.InlineData(values=res_bins.to_dicts())).mark_rect().en
     x=alt.X("w_bin:O", title="Ancho (px)"),
     y=alt.Y("h_bin:O", title="Alto (px)"),
     color=alt.Color("n:Q", title="Imágenes", scale=alt.Scale(scheme="blues")),
-    tooltip=["w_bin", "h_bin", "n"],
+    tooltip=[
+        alt.Tooltip("w_bin:Q", title="Ancho (px)"),
+        alt.Tooltip("h_bin:Q", title="Alto (px)"),
+        alt.Tooltip("n:Q", title="Imágenes"),
+    ],
 ).properties(width=400, height=400, title="Distribución de resoluciones (bins 32 px)")
 display(res_chart)
 
@@ -331,7 +335,7 @@ eligible_identities = identity_counts_all.filter(pl.col("count") >= MIN_IMAGES_P
 low_count_identities = identity_counts_all.filter(pl.col("count") < MIN_IMAGES_PER_IDENTITY)
 
 images_after_rule1 = readable.filter(
-    pl.col("identity").is_in(eligible_identities["identity"])
+    pl.col("identity").is_in(eligible_identities["identity"].implode())
 )
 
 # --- Regla 2: resolución mínima de imagen ---
@@ -388,7 +392,7 @@ for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
         x1, y1, x2, y2 = face.bbox.astype(int).tolist()
         bbox_width, bbox_height = x2 - x1, y2 - y1
         min_bbox_side = min(bbox_width, bbox_height)
-        keypoints = np.rint(face.kps).astype(int).tolist()
+        keypoints = face.kps.astype(np.float32).tolist()
         requires_upscale = min_bbox_side < FACE_SIZE
         quality_rule = (
             "5. Bbox < 56 px"
@@ -430,20 +434,34 @@ post_detection_counts = (
     detections.group_by("quality_rule")
     .len()
     .rename({"len": "imagenes_descartadas"})
+    .with_columns(pl.col("imagenes_descartadas").cast(pl.Int64))
     .sort("quality_rule")
 )
 
 accepted = detections.filter(pl.col("quality_rule").str.starts_with("Aceptada"))
-rejected_rules = post_detection_counts.filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
+rejected_rules = (
+    post_detection_counts
+    .filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
+    .with_columns(
+        pl.lit(None).cast(pl.Int64).alias("identidades_descartadas"),
+        (
+            pl.lit(images_after_rule2.height, dtype=pl.Int64)
+            - pl.col("imagenes_descartadas").cum_sum()
+        ).alias("imagenes_restantes"),
+    )
+    .rename({"quality_rule": "regla"})
+    .select([
+        "regla",
+        "identidades_descartadas",
+        "imagenes_descartadas",
+        "imagenes_restantes",
+    ])
+)
 
 # Pipeline completo: conteo por regla
-rejected_rules = rejected_rules.with_columns([
-    pl.lit(None).alias("identidades_descartadas"),
-])
-
 pipeline_summary = pl.concat([
     pre_detection_summary,
-    rejected_rules.rename({"quality_rule": "regla"}),
+    rejected_rules,
 ])
 
 # Total final aceptado
@@ -474,23 +492,22 @@ rejected_examples = (
     .agg(pl.col("path").head(3).alias("paths"))
 )
 
-for row in rejected_examples.iter_rows(named=True):
-    rule = row["quality_rule"]
-    paths = row["paths"]
-    if not paths:
-        continue
-    n = len(paths)
-    fig, axes = plt.subplots(1, n, figsize=(3 * n, 3))
-    if n == 1:
-        axes = [axes]
-    for ax, p in zip(axes, paths):
-        with Image.open(DATA_DIR / p) as img:
-            ax.imshow(img.convert("RGB"))
-        ax.set_title(f"{rule}\n{p[:40]}...", fontsize=8)
-        ax.axis("off")
-    fig.suptitle(f"Ejemplos: {rule}", fontsize=10)
-    plt.tight_layout()
-    plt.show()
+if rejected_examples.is_empty():
+    print("No hay imágenes descartadas por las reglas de detección.")
+else:
+    for row in rejected_examples.iter_rows(named=True):
+        rule = row["quality_rule"]
+        paths = row["paths"]
+        n = len(paths)
+        fig, axes = plt.subplots(1, n, figsize=(3 * n, 3), squeeze=False)
+        for ax, p in zip(axes.flat, paths):
+            with Image.open(DATA_DIR / p) as img:
+                ax.imshow(img.convert("RGB"))
+            ax.set_title(f"{rule}\n{p[:40]}...", fontsize=8)
+            ax.axis("off")
+        fig.suptitle(f"Ejemplos: {rule}", fontsize=10)
+        plt.tight_layout()
+        plt.show()
 
 # %% [markdown]
 # ## Detección, landmarks y alineación con SCRFD
@@ -542,22 +559,38 @@ plt.show()
 MIN_PER_ID = 100
 MAX_PER_ID = 100
 
-accepted_counts = accepted.group_by("identity").len().rename({"len": "count"})
+accepted_counts = (
+    accepted.group_by("identity")
+    .len()
+    .rename({"len": "count"})
+    .sort("count", descending=True)
+)
 kept = accepted_counts.filter(pl.col("count") >= MIN_PER_ID)["identity"].to_list()
 
-balanced_parts = []
-for ident in kept:
-    df = accepted.filter(pl.col("identity") == ident)
-    n = min(df.height, MAX_PER_ID)
-    balanced_parts.append(df.sample(n=n, seed=42))
+if not kept:
+    display(accepted_counts)
+    raise ValueError(
+        f"Ninguna identidad tiene al menos {MIN_PER_ID} imágenes aceptadas. "
+        "Reducí MIN_PER_ID o revisá las reglas de calidad."
+    )
 
-balanced = pl.concat(balanced_parts).sort(["identity", "path"])
-print(f"Subset balanceado: {balanced['identity'].n_unique()} identidades × {MAX_PER_ID} = {balanced.height} imágenes")
+balanced = (
+    accepted.filter(pl.col("identity").is_in(kept))
+    .group_by("identity", maintain_order=True)
+    .agg(pl.all().sample(n=MAX_PER_ID, seed=42))
+    .explode(pl.all().exclude("identity"))
+    .sort(["identity", "path"])
+)
+
+print(
+    f"Subset balanceado: {balanced['identity'].n_unique()} identidades "
+    f"× {MAX_PER_ID} = {balanced.height} imágenes"
+)
 
 # %% [markdown]
 # ## Clustering exploratorio
 #
-# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales para detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
+# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
 
 # %%
 from sklearn.manifold import TSNE
@@ -643,7 +676,6 @@ display(scatter)
 
 # %%
 import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
 augmentation_pipeline = A.Compose([
     A.HorizontalFlip(p=0.5),                         # simétrico en rostros (común en datasets)
@@ -697,13 +729,12 @@ show_augmentations(DATA_DIR / sample_img)
 # %% [markdown]
 # ## Partición de datos (splits)
 #
-# Dividimos en **train / validation / test** estratificados por identidad. Como el objetivo final es **open-set** (verificación con personas no vistas en entrenamiento), esta partición inicial es **closed-set** para entrenar la CNN custom: las mismas identidades aparecen en los tres splits, con imágenes distintas. El escenario open-set se evaluará en la notebook `2-train.ipynb`.
+# Dividimos en **train / validation / test** estratificados por identidad. Como el objetivo final es **open-set** (verificación con personas no vistas en entrenamiento), esta partición inicial es **closed-set** para entrenar la CNN custom: cada identidad aparece en los tres splits, con imágenes distintas. El escenario open-set se evaluará en la notebook `2-train.ipynb`.
 #
-# Proporciones: **70% train / 15% validation / 15% test**.
+# Proporciones por identidad: **70% train / 15% validation / 15% test**.
 # Semilla fija (`SEED = 42`) y guardado en CSV para reproducibilidad.
 
 # %%
-from sklearn.model_selection import train_test_split
 import json
 
 SEED = 42
@@ -711,20 +742,36 @@ TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
-# Estratificado por identidad sobre `balanced`
-identities = balanced["identity"].unique().to_list()
-train_ids, temp_ids = train_test_split(
-    identities, test_size=(1 - TRAIN_RATIO), random_state=SEED, stratify=None
-)
-val_ids, test_ids = train_test_split(
-    temp_ids, test_size=(TEST_RATIO / (VAL_RATIO + TEST_RATIO)), random_state=SEED, stratify=None
+# Split closed-set: cada identidad queda representada en train, val y test.
+# El hash fijo evita depender del orden original de las filas.
+split_source = (
+    balanced.with_columns(
+        pl.struct(["identity", "path"]).hash(seed=SEED).alias("_split_order")
+    )
+    .sort(["identity", "_split_order"])
+    .with_columns([
+        (pl.col("path").cum_count().over("identity") - 1).alias("_position"),
+        pl.len().over("identity").alias("_identity_size"),
+    ])
+    .with_columns([
+        (pl.col("_identity_size") * TRAIN_RATIO).floor().cast(pl.Int64).alias("_train_end"),
+        (pl.col("_identity_size") * (TRAIN_RATIO + VAL_RATIO)).floor().cast(pl.Int64).alias("_val_end"),
+    ])
+    .with_columns(
+        pl.when(pl.col("_position") < pl.col("_train_end"))
+        .then(pl.lit("train"))
+        .when(pl.col("_position") < pl.col("_val_end"))
+        .then(pl.lit("val"))
+        .otherwise(pl.lit("test"))
+        .alias("split")
+    )
 )
 
-train_df = balanced.filter(pl.col("identity").is_in(train_ids))
-val_df = balanced.filter(pl.col("identity").is_in(val_ids))
-test_df = balanced.filter(pl.col("identity").is_in(test_ids))
+train_df = split_source.filter(pl.col("split") == "train")
+val_df = split_source.filter(pl.col("split") == "val")
+test_df = split_source.filter(pl.col("split") == "test")
 
-# Verificación: imágenes únicas por split
+# Verificación: imágenes únicas y todas las identidades presentes en cada split.
 train_paths = set(train_df["path"].to_list())
 val_paths = set(val_df["path"].to_list())
 test_paths = set(test_df["path"].to_list())
@@ -732,6 +779,7 @@ test_paths = set(test_df["path"].to_list())
 leak_train_val = len(train_paths & val_paths)
 leak_train_test = len(train_paths & test_paths)
 leak_val_test = len(val_paths & test_paths)
+total_identities = balanced["identity"].n_unique()
 
 split_summary = pl.DataFrame({
     "split": ["train", "val", "test", "total"],
@@ -739,14 +787,14 @@ split_summary = pl.DataFrame({
         train_df["identity"].n_unique(),
         val_df["identity"].n_unique(),
         test_df["identity"].n_unique(),
-        balanced["identity"].n_unique(),
+        total_identities,
     ],
     "imagenes": [train_df.height, val_df.height, test_df.height, balanced.height],
     "imgs_por_identidad": [
         round(train_df.height / train_df["identity"].n_unique(), 1),
         round(val_df.height / val_df["identity"].n_unique(), 1),
         round(test_df.height / test_df["identity"].n_unique(), 1),
-        round(balanced.height / balanced["identity"].n_unique(), 1),
+        round(balanced.height / total_identities, 1),
     ],
 })
 
@@ -754,6 +802,7 @@ print("=== Splits ===")
 display(split_summary)
 print(f"Fuga train↔val: {leak_train_val}, train↔test: {leak_train_test}, val↔test: {leak_val_test}")
 assert leak_train_val == 0 and leak_train_test == 0 and leak_val_test == 0, "Fuga de datos detectada"
+assert all(df["identity"].n_unique() == total_identities for df in [train_df, val_df, test_df]), "Faltan identidades en algún split"
 
 # Guardar splits
 OUTPUT_DIR = Path("output")
@@ -767,7 +816,8 @@ with open(OUTPUT_DIR / "split_info.json", "w", encoding="utf-8") as f:
     json.dump({
         "seed": SEED,
         "ratios": {"train": TRAIN_RATIO, "val": VAL_RATIO, "test": TEST_RATIO},
-        "identities": {"train": train_ids, "val": val_ids, "test": test_ids},
+        "strategy": "closed-set: split estratificado dentro de cada identidad",
+        "identities": balanced["identity"].sort().to_list(),
     }, f, indent=2)
 
 print(f"Splits guardados en {OUTPUT_DIR}/")
@@ -779,14 +829,13 @@ print(f"Splits guardados en {OUTPUT_DIR}/")
 # Usamos **Pins Face Recognition** (Kaggle), un dataset de imágenes públicas de celebridades. Las imágenes provienen de fuentes web públicas; verificamos que el uso es para fines de investigación/académicos, consistente con el propósito de este trabajo.
 #
 # ### Sesgos
-# El dataset está compuesto principalmente por celebridades occidentales. Esto introduce sesgos demográficos notables:
-# - **Género**: predominio femenino (TODO calcular proporción exacta).
+# El dataset está compuesto principalmente por celebridades de cine y TV occidental. Esto introduce sesgos demográficos notables:
+# - **Género**: predominio femenino (el dataset está diseñado como "beauty dataset").
 # - **Edad**: adultos jóvenes predominantes.
 # - **Tono de piel**: infra-representación de tonos oscuros.
 #
 # Estos sesgos impactan directamente en el desempeño: un modelo entrenado solo con este dataset tendrá **menor accuracy al reconocer personas fuera de estas distribuciones demográficas**.
 #
-# TODO revisar bien esto:
 # ### Marco legal
 # Los rostros son **datos biométricos sensibles** según la **Ley 25.326 de Protección de Datos Personales** (Argentina). El reconocimiento facial implica riesgos de:
 # - **Vigilancia masiva** sin consentimiento.
