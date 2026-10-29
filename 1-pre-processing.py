@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.1
+#       jupytext_version: 1.18.1
 #   kernelspec:
 #     display_name: .venv
 #     language: python
@@ -371,6 +371,178 @@ print("=== Resumen pre-detección ===")
 display(pre_detection_summary)
 print(f"Identidades descartadas por regla 1 ({low_count_identities.height}):")
 display(low_count_identities.sort("count"))
+
+# %% [markdown]
+# ## Calibración del umbral de detección
+#
+# **30 imágenes sobre ~17k es demasiado poco**: no representa poses difíciles,
+# rostros lejanos ni oclusiones.  
+# Usamos **n = 200** (~1,2 %), suficiente para ver patrones sin ralentizar
+# la exploración.
+#
+# Probamos umbrales **bajos** (0.15–0.50) porque SCRFD en imágenes de internet
+# suele ser conservador; a 0.50 muchas caras válidas se pierden.
+
+# %%
+SUBSAMPLE_SIZE = 200
+test_sample = images_after_rule2.sample(
+    n=min(SUBSAMPLE_SIZE, images_after_rule2.height), seed=42
+)
+
+thresholds = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50]
+results = []
+examples = {thresh: {"0": [], "1": [], "2+": []} for thresh in thresholds}
+
+# Detectamos UNA VEZ por imagen con umbral muy bajo (0.01) para obtener todos los
+# candidatos; después filtramos por score sin volver a correr la red.
+tune_detector = FaceAnalysis(
+    name="buffalo_l",
+    allowed_modules=["detection"],
+    providers=["CPUExecutionProvider"],
+)
+# Nota: det_score es el score crudo del modelo; det_thresh solo filtra la salida.
+# Por eso podemos detectar una vez con umbral 0.0 y luego filtrar por código.
+tune_detector.prepare(ctx_id=-1, det_thresh=0.0, det_size=DETECTION_SIZE)
+
+# Almacenamos path + lista de det_scores de cada cara detectada.
+# Pasamos la imagen original: el detector reescala internamente a det_size.
+detection_cache = []
+for row in test_sample.iter_rows(named=True):
+    img = cv2.imread(str(DATA_DIR / row["path"]))
+    if img is None:
+        continue
+    faces = tune_detector.get(img)
+    scores = [float(f.det_score) for f in faces]
+    detection_cache.append({"path": row["path"], "scores": scores})
+
+for thresh in thresholds:
+    counts = {"0": 0, "1": 0, "2+": 0}
+    for item in detection_cache:
+        n = sum(1 for s in item["scores"] if s >= thresh)
+        cat = "0" if n == 0 else "1" if n == 1 else "2+"
+        counts[cat] += 1
+        if len(examples[thresh][cat]) < 2:
+            examples[thresh][cat].append(item["path"])
+    results.append({
+        "threshold": thresh,
+        "0_faces": counts["0"],
+        "1_face": counts["1"],
+        "2+_faces": counts["2+"],
+    })
+
+tune_df = pl.from_dicts(results)
+display(tune_df)
+
+best = tune_df.with_columns(
+    (pl.col("1_face") - pl.col("0_faces") - pl.col("2+_faces")).alias("score")
+).sort("score", descending=True).head(1)
+print("Mejor threshold según score rápido:")
+display(best)
+
+# Grid: 1 fila por threshold, 3 columnas (0, 1, 2+ rostros)
+N_TH = len(thresholds)
+fig, axes = plt.subplots(N_TH, 3, figsize=(9, 3 * N_TH))
+if N_TH == 1:
+    axes = axes.reshape(1, -1)
+
+for i, thresh in enumerate(thresholds):
+    for j, cat in enumerate(["0", "1", "2+"]):
+        ax = axes[i, j]
+        ax.set_title(f"t={thresh} | {cat} cara(s)", fontsize=9)
+        if examples[thresh][cat]:
+            path = examples[thresh][cat][0]
+            # Mostramos la imagen tal como la ve el detector: reescalada a 640x640
+            img = cv2.imread(str(DATA_DIR / path))
+            img_resized = cv2.resize(img, DETECTION_SIZE) if img is not None else None
+            if img_resized is not None:
+                ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
+        else:
+            ax.text(0.5, 0.5, "Sin casos", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+
+fig.suptitle("Ejemplo por threshold y categoría (1ª imagen disponible)", fontsize=12)
+plt.tight_layout()
+plt.show()
+
+# %%
+# Función simple para inspeccionar categorías a un threshold dado
+def show_threshold_samples(
+    threshold: float,
+    category: str,  # "0", "1", o "2+"
+    n: int = 6,
+    sample_df=images_after_rule2,
+    seed: int = 42,
+    detection_cache=None,
+):
+    """Muestra N imágenes de una categoría para un threshold dado.
+
+    Si se pasa detection_cache (lista de dicts con 'path' y 'scores'),
+    filtra directamente sin volver a correr la red.
+    Si no, detecta una vez con det_thresh=0.0 sobre sample_df.
+
+    Muestra la imagen reescalada a DETECTION_SIZE tal como la ve el detector.
+    """
+    if detection_cache is None:
+        det = FaceAnalysis(
+            name="buffalo_l",
+            allowed_modules=["detection"],
+            providers=["CPUExecutionProvider"],
+        )
+        # det_score es independiente de det_thresh; detectamos todo y filtramos nosotros
+        det.prepare(ctx_id=-1, det_thresh=0.0, det_size=DETECTION_SIZE)
+
+        detection_cache = []
+        for row in sample_df.iter_rows(named=True):
+            img = cv2.imread(str(DATA_DIR / row["path"]))
+            if img is None:
+                continue
+            faces = det.get(img)  # el detector reescala internamente
+            scores = [float(f.det_score) for f in faces]
+            detection_cache.append({"path": row["path"], "scores": scores})
+
+    all_matched = []
+    for item in detection_cache:
+        n_faces = sum(1 for s in item["scores"] if s >= threshold)
+        cat = "0" if n_faces == 0 else "1" if n_faces == 1 else "2+"
+        if cat == category:
+            all_matched.append(item["path"])
+
+    rng = np.random.default_rng(seed)
+    matched = (
+        rng.choice(all_matched, size=min(n, len(all_matched)), replace=False).tolist()
+        if all_matched else []
+    )
+
+    cols = min(n, 3)
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    elif rows == 1:
+        axes = axes.reshape(1, -1)
+    elif cols == 1:
+        axes = axes.reshape(-1, 1)
+    axes = axes.flatten()
+
+    for i in range(n):
+        ax = axes[i]
+        if i < len(matched):
+            img = cv2.imread(str(DATA_DIR / matched[i]))
+            # Mostramos la imagen tal como la ve el detector: reescalada a 640x640
+            img_resized = cv2.resize(img, DETECTION_SIZE) if img is not None else None
+            if img_resized is not None:
+                ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
+        ax.axis("off")
+
+    fig.suptitle(f"t={threshold} | categoría={category} ({len(matched)} encontradas)", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+    return matched
+
+
+# Ejemplo de uso (reutilizando detection_cache de la celda anterior):
+# show_threshold_samples(0.30, "1", n=6, detection_cache=detection_cache)
+# show_threshold_samples(0.15, "2+", n=4, detection_cache=detection_cache)
 
 # %%
 # Detección facial con SCRFD (buffalo_l) sobre imágenes que pasaron reglas 1+2
