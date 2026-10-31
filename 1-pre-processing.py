@@ -23,10 +23,8 @@
 # - Alumno 2 : **Gabriel Soda**
 
 # %%
-from pathlib import Path
-from PIL import Image, UnidentifiedImageError
-from IPython.display import display
 import warnings
+from pathlib import Path
 
 import altair as alt
 import cv2
@@ -35,6 +33,8 @@ import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
+from IPython.display import display
+from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
 
@@ -43,7 +43,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 FACE_SIZE = 112
 MIN_FACE_SIDE = FACE_SIZE // 2
 DETECTION_THRESHOLD = 0.5
-DETECTION_SIZE = (640, 640)
+DETECTION_SIZE = (160, 160)
 
 # %%
 # Escaneamos metadatos: no cargamos todos los píxeles ni imágenes completas en memoria.
@@ -365,14 +365,20 @@ plt.show()
 # %% [markdown]
 # ## Control de calidad y limpieza
 #
-# Aplicamos reglas de filtrado **en orden**, reportando cuántas imágenes descarta cada una. El orden prioriza eficiencia: descartamos identidades con muy pocas muestras **antes** de correr detección facial.
+# Aplicamos reglas de filtrado **en orden**, reportando cuántas imágenes descarta cada una.
+# El orden prioriza eficiencia: descartamos identidades con muy pocas muestras **antes**
+# de correr detección facial. La detección se usa luego para verificar que exista al menos
+# un rostro y para seleccionar el rostro principal que se alineará.
 #
-# Reglas:
-# 1. Identidades con $< 100$ imágenes (descartamos la identidad completa).
-# 2. Imagen con algún lado $< 56$ px (no puede contener una cara de $56 \times 56$).
-# 3. Detector: 0 rostros detectados.
-# 4. Detector: más de 1 rostro detectado.
-# 5. Bbox del rostro con lado $< 56$ px.
+# Reglas aplicadas:
+# 1. Identidades con menos de 100 imágenes (descartamos la identidad completa).
+# 2. Rostro principal con lado mínimo de la bbox <56px.
+# 3. Detector: 0 rostros detectados (imagen OK pero sin cara visible).
+#
+# Si el detector encuentra uno o más rostros, se conserva el de mayor confianza como rostro
+# principal. La cantidad de detecciones se registra como metadato, pero las imágenes con
+# múltiples rostros no se descartan. Las caras aceptadas se normalizan a 112x112 px:
+# las menores se amplían y las mayores se reducen.
 
 # %%
 # Control de calidad: pipeline de filtrado con conteo por regla
@@ -397,33 +403,24 @@ images_after_rule1 = readable.filter(
     pl.col("identity").is_in(eligible_identities["identity"].implode())
 )
 
-# --- Regla 2: resolución mínima de imagen ---
-images_after_rule2 = images_after_rule1.filter(
-    (pl.col("width") >= MIN_FACE_SIDE) & (pl.col("height") >= MIN_FACE_SIDE)
-)
-
-# Tabla resumen pre-detección
+# Pre-detección: Regla 1
 pre_detection_summary = pl.DataFrame(
     {
         "regla": [
             "0. Imágenes legibles (base)",
             "1. Identidades < 100 imgs",
-            "2. Imagen con lado < 56 px",
         ],
         "identidades_descartadas": [
             None,
             low_count_identities.height,
-            None,
         ],
         "imagenes_descartadas": [
             0,
             readable.height - images_after_rule1.height,
-            images_after_rule1.height - images_after_rule2.height,
         ],
         "imagenes_restantes": [
             readable.height,
             images_after_rule1.height,
-            images_after_rule2.height,
         ],
     }
 )
@@ -470,50 +467,47 @@ plt.show()
 # %% [markdown]
 # ## Calibración del umbral de detección
 #
-# **30 imágenes sobre ~17k es demasiado poco**: no representa poses difíciles,
-# rostros lejanos ni oclusiones.  
-# Usamos **n = 200** (~1,2 %), suficiente para ver patrones sin ralentizar
-# la exploración.
-#
-# Probamos umbrales **bajos** (0.15–0.50) porque SCRFD en imágenes de internet
-# suele ser conservador; a 0.50 muchas caras válidas se pierden.
+# Prueba sobre un subsample del ~25% de las imagenes (4225 imágenes) para determinar el umbral de detección que mejor clasifica las imágenes en 0, 1 o 2+ rostros detectados. Se inspeccionan visualmente los falsos positivos y negativos para ajustar el umbral.
 
 # %%
-SUBSAMPLE_SIZE = 200
-test_sample = images_after_rule2.sample(
-    n=min(SUBSAMPLE_SIZE, images_after_rule2.height), seed=42
+SUBSAMPLE_SIZE = 4225
+test_sample = images_after_rule1.sample(
+    n=min(SUBSAMPLE_SIZE, images_after_rule1.height), seed=42
 )
 
-thresholds = [0.15, 0.20, 0.25, 0.30, 0.40, 0.50]
+thresholds = [0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 results = []
 examples = {thresh: {"0": [], "1": [], "2+": []} for thresh in thresholds}
 
-# Detectamos UNA VEZ por imagen con umbral muy bajo (0.01) para obtener todos los
-# candidatos; después filtramos por score sin volver a correr la red.
+# Detectamos UNA VEZ por imagen con umbral 0.1 (suficientemente bajo
+# para capturar caras reales, pero evita la avalancha de basura de 0.0).
 tune_detector = FaceAnalysis(
     name="buffalo_l",
     allowed_modules=["detection"],
     providers=["CPUExecutionProvider"],
 )
-# Nota: det_score es el score crudo del modelo; det_thresh solo filtra la salida.
-# Por eso podemos detectar una vez con umbral 0.0 y luego filtrar por código.
-tune_detector.prepare(ctx_id=-1, det_thresh=0.0, det_size=DETECTION_SIZE)
+tune_detector.prepare(ctx_id=-1, det_thresh=0.1, det_size=DETECTION_SIZE)
 
-# Almacenamos path + lista de det_scores de cada cara detectada.
-# Pasamos la imagen original: el detector reescala internamente a det_size.
+images_with_small_bbox = 0
 detection_cache = []
 for row in test_sample.iter_rows(named=True):
     img = cv2.imread(str(DATA_DIR / row["path"]))
     if img is None:
         continue
     faces = tune_detector.get(img)
-    scores = [float(f.det_score) for f in faces]
-    detection_cache.append({"path": row["path"], "scores": scores})
+    face_data = []
+    for f in faces:
+        min_side = min(
+            int(f.bbox[2]) - int(f.bbox[0]),
+            int(f.bbox[3]) - int(f.bbox[1]),
+        )
+        face_data.append({"score": float(f.det_score)})
+    detection_cache.append({"path": row["path"], "faces": face_data})
 
 for thresh in thresholds:
     counts = {"0": 0, "1": 0, "2+": 0}
     for item in detection_cache:
-        n = sum(1 for s in item["scores"] if s >= thresh)
+        n = sum(1 for f in item["faces"] if f["score"] >= thresh)
         cat = "0" if n == 0 else "1" if n == 1 else "2+"
         counts[cat] += 1
         if len(examples[thresh][cat]) < 2:
@@ -530,94 +524,33 @@ for thresh in thresholds:
 tune_df = pl.from_dicts(results)
 display(tune_df)
 
-best = (
-    tune_df.with_columns(
-        (pl.col("1_face") - pl.col("0_faces") - pl.col("2+_faces")).alias("score")
-    )
-    .sort("score", descending=True)
-    .head(1)
-)
-print("Mejor threshold según score rápido:")
-display(best)
-
-# Grid: 1 fila por threshold, 3 columnas (0, 1, 2+ rostros)
-N_TH = len(thresholds)
-fig, axes = plt.subplots(N_TH, 3, figsize=(9, 3 * N_TH))
-if N_TH == 1:
-    axes = axes.reshape(1, -1)
-
-for i, thresh in enumerate(thresholds):
-    for j, cat in enumerate(["0", "1", "2+"]):
-        ax = axes[i, j]
-        ax.set_title(f"t={thresh} | {cat} cara(s)", fontsize=9)
-        if examples[thresh][cat]:
-            path = examples[thresh][cat][0]
-            # Mostramos la imagen tal como la ve el detector: reescalada a 640x640
-            img = cv2.imread(str(DATA_DIR / path))
-            img_resized = cv2.resize(img, DETECTION_SIZE) if img is not None else None
-            if img_resized is not None:
-                ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
-        else:
-            ax.text(
-                0.5, 0.5, "Sin casos", ha="center", va="center", transform=ax.transAxes
-            )
-        ax.axis("off")
-
-fig.suptitle("Ejemplo por threshold y categoría (1ª imagen disponible)", fontsize=12)
-plt.tight_layout()
-plt.show()
 
 # %%
 # Función simple para inspeccionar categorías a un threshold dado
 def show_threshold_samples(
     threshold: float,
     category: str,  # "0", "1", o "2+"
+    detection_cache,
     n: int = 6,
-    sample_df=images_after_rule2,
     seed: int = 42,
-    detection_cache=None,
 ):
-    """Muestra N imágenes de una categoría para un threshold dado.
-
-    Si se pasa detection_cache (lista de dicts con 'path' y 'scores'),
-    filtra directamente sin volver a correr la red.
-    Si no, detecta una vez con det_thresh=0.0 sobre sample_df.
-
-    Muestra la imagen reescalada a DETECTION_SIZE tal como la ve el detector.
-    """
-    if detection_cache is None:
-        det = FaceAnalysis(
-            name="buffalo_l",
-            allowed_modules=["detection"],
-            providers=["CPUExecutionProvider"],
-        )
-        # det_score es independiente de det_thresh; detectamos todo y filtramos nosotros
-        det.prepare(ctx_id=-1, det_thresh=0.0, det_size=DETECTION_SIZE)
-
-        detection_cache = []
-        for row in sample_df.iter_rows(named=True):
-            img = cv2.imread(str(DATA_DIR / row["path"]))
-            if img is None:
-                continue
-            faces = det.get(img)  # el detector reescala internamente
-            scores = [float(f.det_score) for f in faces]
-            detection_cache.append({"path": row["path"], "scores": scores})
+    """Muestra N imágenes de una categoría para un threshold dado."""
 
     all_matched = []
     for item in detection_cache:
-        n_faces = sum(1 for s in item["scores"] if s >= threshold)
+        n_faces = sum(1 for f in item["faces"] if f["score"] >= threshold)
         cat = "0" if n_faces == 0 else "1" if n_faces == 1 else "2+"
         if cat == category:
             all_matched.append(item["path"])
 
+    n = min(n, len(all_matched))
+
     rng = np.random.default_rng(seed)
     matched = (
-        rng.choice(all_matched, size=min(n, len(all_matched)), replace=False).tolist()
-        if all_matched
-        else []
+        rng.choice(all_matched, size=n, replace=False).tolist() if all_matched else []
     )
 
-    cols = min(n, 3)
+    cols = min(n, 5)
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
     if rows == 1 and cols == 1:
@@ -632,10 +565,7 @@ def show_threshold_samples(
         ax = axes[i]
         if i < len(matched):
             img = cv2.imread(str(DATA_DIR / matched[i]))
-            # Mostramos la imagen tal como la ve el detector: reescalada a 640x640
-            img_resized = cv2.resize(img, DETECTION_SIZE) if img is not None else None
-            if img_resized is not None:
-                ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
+            ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         ax.axis("off")
 
     fig.suptitle(
@@ -647,12 +577,17 @@ def show_threshold_samples(
     return matched
 
 
-# Ejemplo de uso (reutilizando detection_cache de la celda anterior):
-# show_threshold_samples(0.30, "1", n=6, detection_cache=detection_cache)
-# show_threshold_samples(0.15, "2+", n=4, detection_cache=detection_cache)
+# %%
+show_threshold_samples(0.60, "2+", detection_cache, n=25)
+
+# %% [markdown]
+# Decidimos quedarnos con el umbral 0.6 para la detección de rostros, buen balance
 
 # %%
-# Detección facial con SCRFD (buffalo_l) sobre imágenes que pasaron reglas 1+2
+DETECTION_THRESHOLD = 0.6
+
+# %%
+# Detección facial con SCRFD: se conserva el rostro principal si hay varias detecciones.
 detector = FaceAnalysis(
     name="buffalo_l",
     allowed_modules=["detection"],
@@ -661,35 +596,35 @@ detector = FaceAnalysis(
 detector.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
 
 detection_records = []
-for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
+for index, row in enumerate(images_after_rule1.iter_rows(named=True), start=1):
     image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
-    faces = detector.get(image_bgr) if image_bgr is not None else []
+    if image_bgr is None:
+        faces = []
+    else:
+        faces = detector.get(image_bgr)
+
     face_count = len(faces)
 
-    if face_count == 1:
-        face = faces[0]
+    if face_count == 0:
+        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
+        keypoints = None
+        requires_upscale = requires_downscale = None
+        quality_rule = "3. Sin rostro detectado"
+
+    else:
+        # Elegimos explícitamente la detección de mayor confianza como rostro principal.
+        face = max(faces, key=lambda detected_face: float(detected_face.det_score))
         x1, y1, x2, y2 = face.bbox.astype(int).tolist()
         bbox_width, bbox_height = x2 - x1, y2 - y1
         min_bbox_side = min(bbox_width, bbox_height)
         keypoints = face.kps.astype(np.float32).tolist()
         requires_upscale = min_bbox_side < FACE_SIZE
+        requires_downscale = min_bbox_side > FACE_SIZE
         quality_rule = (
-            "5. Bbox < 56 px"
+            "2. Rostro principal menor a 56 px"
             if min_bbox_side < MIN_FACE_SIDE
-            else "Aceptada: requiere escalado"
-            if requires_upscale
             else "Aceptada"
         )
-    elif face_count == 0:
-        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
-        keypoints = None
-        requires_upscale = None
-        quality_rule = "3. Sin rostro detectado"
-    else:
-        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
-        keypoints = None
-        requires_upscale = None
-        quality_rule = "4. Más de un rostro"
 
     detection_records.append(
         {
@@ -705,12 +640,13 @@ for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
             "min_bbox_side": min_bbox_side,
             "keypoints": keypoints,
             "requires_upscale_after_detection": requires_upscale,
+            "requires_downscale_after_detection": requires_downscale,
             "quality_rule": quality_rule,
         }
     )
 
-    if index % 500 == 0 or index == images_after_rule2.height:
-        print(f"Procesadas {index:,}/{images_after_rule2.height:,} imágenes")
+    if index % 500 == 0 or index == images_after_rule1.height:
+        print(f"Procesadas {index:,}/{images_after_rule1.height:,} imágenes")
 
 detections = pl.from_dicts(detection_records)
 
@@ -729,7 +665,7 @@ rejected_rules = (
     .with_columns(
         pl.lit(None).cast(pl.Int64).alias("identidades_descartadas"),
         (
-            pl.lit(images_after_rule2.height, dtype=pl.Int64)
+            pl.lit(images_after_rule1.height, dtype=pl.Int64)
             - pl.col("imagenes_descartadas").cum_sum()
         ).alias("imagenes_restantes"),
     )
@@ -775,7 +711,13 @@ display(pipeline_summary)
 
 print(f"\nAceptadas: {final_accepted} imágenes de {final_identities} identidades")
 print(
-    f"Requieren escalado: {accepted.filter(pl.col('requires_upscale_after_detection')).height}"
+    f"Requieren ampliación: {accepted.filter(pl.col('requires_upscale_after_detection')).height}"
+)
+print(
+    f"Requieren reducción: {accepted.filter(pl.col('requires_downscale_after_detection')).height}"
+)
+print(
+    f"Con múltiples rostros (se conserva el principal): {accepted.filter(pl.col('face_count') > 1).height}"
 )
 
 # %%
@@ -861,7 +803,12 @@ accepted_counts = (
     .rename({"len": "count"})
     .sort("count", descending=True)
 )
+
 kept = accepted_counts.filter(pl.col("count") >= MIN_PER_ID)["identity"].to_list()
+
+print(
+    f"Se descartan {len(accepted_counts) - len(kept)} identidades con menos de {MIN_PER_ID} imágenes aceptadas"
+)
 
 if not kept:
     display(accepted_counts)
@@ -886,11 +833,11 @@ print(
 # %% [markdown]
 # ## Clustering exploratorio
 #
-# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
+# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre el **subset balanceado**: 100 imágenes aceptadas por identidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
 
 # %%
-from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
+from sklearn.manifold import TSNE
 from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
@@ -906,20 +853,21 @@ face_analysis.prepare(
     ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE
 )
 
-# Extraemos embeddings sobre `accepted` (ya tienen exactamente 1 rostro)
+# Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
+# Si hay varias detecciones usamos el rostro principal.
 embedding_records = []
-for row in accepted.iter_rows(named=True):
+for row in balanced.iter_rows(named=True):
     image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
     if image_bgr is None:
         continue
     faces = face_analysis.get(image_bgr)
-    if len(faces) == 1:
-        emb = faces[0].embedding
+    if faces:
+        face = max(faces, key=lambda detected_face: float(detected_face.det_score))
         embedding_records.append(
             {
                 "path": row["path"],
                 "identity": row["identity"],
-                "embedding": emb,
+                "embedding": face.embedding,
             }
         )
 
@@ -934,7 +882,11 @@ print(
 n_samples = min(2000, X.shape[0])
 tsne_idx = np.random.RandomState(42).choice(X.shape[0], n_samples, replace=False)
 X_tsne = TSNE(
-    n_components=2, random_state=42, perplexity=30, init="pca", learning_rate="auto"
+    n_components=2,
+    random_state=42,
+    perplexity=30,
+    init="pca",
+    learning_rate="auto",
 ).fit_transform(X[tsne_idx])
 
 # K-Means con k = n identidades
@@ -969,15 +921,17 @@ tsne_data = pl.DataFrame(
 )
 
 scatter = (
-    alt.Chart(tsne_data.to_dicts())
+    alt.Chart(alt.InlineData(values=tsne_data.to_dicts()))
     .mark_circle(size=30, opacity=0.6)
     .encode(
         x=alt.X("x:Q", title="t-SNE 1"),
         y=alt.Y("y:Q", title="t-SNE 2"),
         color=alt.Color(
-            "identity:N", title="Identidad", scale=alt.Scale(scheme="category20")
+            "identity:N",
+            title="Identidad",
+            scale=alt.Scale(scheme="category20"),
         ),
-        tooltip=["identity:N"],
+        tooltip=["identity:N", "kmeans_label:Q"],
     )
     .properties(
         width=550,
