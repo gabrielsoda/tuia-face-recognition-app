@@ -29,12 +29,12 @@ from pathlib import Path
 import altair as alt
 import cv2
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
 from IPython.display import display
+from matplotlib.patches import Rectangle
 from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
@@ -504,7 +504,8 @@ for row in test_sample.iter_rows(named=True):
                 "bbox": np.asarray(f.bbox, dtype=float).tolist(),
                 "keypoints": (
                     np.asarray(f.kps, dtype=float).tolist()
-                    if f.kps is not None else None
+                    if f.kps is not None
+                    else None
                 ),
             }
         )
@@ -546,6 +547,7 @@ display(tune_df)
 # Ejecutamos el detector con umbral 0,1 y guardamos las detecciones que devuelve.
 # Sobreeso, probamos umbrales más exigentes como 0,3 o 0,6, sin ejecutar nuevamente la red.
 
+
 # %%
 def show_threshold_samples(
     threshold: float,
@@ -578,9 +580,7 @@ def show_threshold_samples(
     matched = rng.choice(all_matched, size=n, replace=False).tolist()
     cols = min(n, 3 if n <= 6 else 5)
     rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(
-        rows, cols, figsize=(4 * cols, 4 * rows), squeeze=False
-    )
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows), squeeze=False)
     axes = axes.flatten()
 
     for ax, path in zip(axes, matched):
@@ -604,16 +604,15 @@ def show_threshold_samples(
             passes = face["score"] >= threshold
             if not passes and not show_below_threshold:
                 continue
-            color = (
-                "limegreen" if i == selected
-                else "darkorange" if passes
-                else "gray"
-            )
+            color = "limegreen" if i == selected else "darkorange" if passes else "gray"
             x1, y1, x2, y2 = face["bbox"]
             ax.add_patch(
                 Rectangle(
-                    (x1, y1), x2 - x1, y2 - y1,
-                    fill=False, edgecolor=color,
+                    (x1, y1),
+                    x2 - x1,
+                    y2 - y1,
+                    fill=False,
+                    edgecolor=color,
                     linewidth=2 if passes else 1,
                     linestyle="-" if passes else "--",
                     alpha=1 if passes else 0.6,
@@ -625,8 +624,13 @@ def show_threshold_samples(
             elif not passes:
                 label += " < umbral"
             ax.text(
-                max(0, x1), max(0, y1), label, fontsize=8, color="white",
-                va="top", bbox={"facecolor": color, "alpha": 0.8, "pad": 1},
+                max(0, x1),
+                max(0, y1),
+                label,
+                fontsize=8,
+                color="white",
+                va="top",
+                bbox={"facecolor": color, "alpha": 0.8, "pad": 1},
             )
             if face.get("keypoints") is not None:
                 points = np.asarray(face["keypoints"])
@@ -636,10 +640,12 @@ def show_threshold_samples(
         ax.set_xlim(-0.5, img.shape[1] - 0.5)
         ax.set_ylim(img.shape[0] - 0.5, -0.5)
         identity = Path(path).parent.name.removeprefix("pins_")
-        ax.set_title(f"{identity}\n{len(passing)} detecciones >= {threshold}", fontsize=9)
+        ax.set_title(
+            f"{identity}\n{len(passing)} detecciones >= {threshold}", fontsize=9
+        )
         ax.axis("off")
 
-    for ax in axes[len(matched):]:
+    for ax in axes[len(matched) :]:
         ax.axis("off")
     fig.suptitle(
         f"t={threshold} | categoría={category} | {len(matched)} imágenes\n"
@@ -705,6 +711,7 @@ for index, row in enumerate(images_after_rule1.iter_rows(named=True), start=1):
             "path": row["path"],
             "identity": row["identity"],
             "face_count": face_count,
+            "detection_score": (float(face.det_score) if face_count > 0 else None),
             "bbox_x1": x1,
             "bbox_y1": y1,
             "bbox_x2": x2,
@@ -798,27 +805,73 @@ print(
 # Fijamos que ambos lados de la caja facial tengan al menos 56 píxeles para evitar ampliar rostros con muy poca resolución original antes de prepararlos a 112×112.
 
 # %%
-# Ejemplos descartados por cada regla (inspección visual de umbrales)
-rejected_examples = (
-    detections.filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
-    .group_by("quality_rule")
-    .agg(pl.col("path").head(3).alias("paths"))
-)
+# Ejemplos descartados: imagen original, caja, landmarks y medidas.
 
-if rejected_examples.is_empty():
+rejected = detections.filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
+
+if rejected.is_empty():
     print("No hay imágenes descartadas por las reglas de detección.")
 else:
-    for row in rejected_examples.iter_rows(named=True):
-        rule = row["quality_rule"]
-        paths = row["paths"]
-        n = len(paths)
-        fig, axes = plt.subplots(1, n, figsize=(3 * n, 3), squeeze=False)
-        for ax, p in zip(axes.flat, paths):
-            with Image.open(DATA_DIR / p) as img:
-                ax.imshow(img.convert("RGB"))
-            ax.set_title(f"{rule}\n{p[:40]}...", fontsize=8)
+    rules = rejected["quality_rule"].unique().sort().to_list()
+
+    for rule in rules:
+        # Conservamos los primeros tres ejemplos de cada regla.
+        examples = rejected.filter(pl.col("quality_rule") == rule).head(3)
+
+        fig, axes = plt.subplots(
+            1,
+            examples.height,
+            figsize=(5 * examples.height, 5),
+            squeeze=False,
+        )
+
+        for ax, row in zip(axes.flat, examples.iter_rows(named=True)):
+            with Image.open(DATA_DIR / row["path"]) as image:
+                image_rgb = image.convert("RGB")
+                width, height = image_rgb.size
+                ax.imshow(image_rgb)
+
+            title = f"{row['identity']}\nImagen: {width} × {height} px"
+
+            if row["bbox_x1"] is not None:
+                x1, y1 = row["bbox_x1"], row["bbox_y1"]
+                x2, y2 = row["bbox_x2"], row["bbox_y2"]
+
+                ax.add_patch(
+                    Rectangle(
+                        (x1, y1),
+                        x2 - x1,
+                        y2 - y1,
+                        fill=False,
+                        edgecolor="red",
+                        linewidth=2,
+                    )
+                )
+
+                if row["keypoints"] is not None:
+                    points = np.asarray(row["keypoints"])
+                    ax.scatter(
+                        points[:, 0],
+                        points[:, 1],
+                        s=18,
+                        c="limegreen",
+                    )
+
+                title += (
+                    f"\nCaja: {row['bbox_width']} × "
+                    f"{row['bbox_height']} px"
+                    f"\nLado menor: {row['min_bbox_side']} px"
+                    f" | Score: {row['detection_score']:.3f}"
+                )
+            else:
+                title += "\nSin detección aceptada"
+
+            ax.set_title(title, fontsize=9)
+            ax.set_xlim(-0.5, width - 0.5)
+            ax.set_ylim(height - 0.5, -0.5)
             ax.axis("off")
-        fig.suptitle(f"Ejemplos: {rule}", fontsize=10)
+
+        fig.suptitle(f"Rechazo: {rule}", fontsize=12)
         plt.tight_layout()
         plt.show()
 
