@@ -488,7 +488,7 @@ show_threshold_samples(0.60, "2+", detection_cache, n=25)
 DETECTION_THRESHOLD = 0.6
 
 # %%
-# Detección facial con SCRFD (buffalo_l) sobre imágenes que pasaron reglas 1+2
+# Detección facial con SCRFD: se conserva el rostro principal si hay varias detecciones.
 detector = FaceAnalysis(
     name="buffalo_l",
     allowed_modules=["detection"],
@@ -497,35 +497,35 @@ detector = FaceAnalysis(
 detector.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
 
 detection_records = []
-for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
+for index, row in enumerate(images_after_rule1.iter_rows(named=True), start=1):
     image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
-    faces = detector.get(image_bgr) if image_bgr is not None else []
+    if image_bgr is None:
+        faces = []
+    else:
+        faces = detector.get(image_bgr)
+
     face_count = len(faces)
 
-    if face_count == 1:
-        face = faces[0]
+    if face_count == 0:
+        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
+        keypoints = None
+        requires_upscale = requires_downscale = None
+        quality_rule = "3. Sin rostro detectado"
+
+    else:
+        # Elegimos explícitamente la detección de mayor confianza como rostro principal.
+        face = max(faces, key=lambda detected_face: float(detected_face.det_score))
         x1, y1, x2, y2 = face.bbox.astype(int).tolist()
         bbox_width, bbox_height = x2 - x1, y2 - y1
         min_bbox_side = min(bbox_width, bbox_height)
         keypoints = face.kps.astype(np.float32).tolist()
         requires_upscale = min_bbox_side < FACE_SIZE
+        requires_downscale = min_bbox_side > FACE_SIZE
         quality_rule = (
-            "5. Bbox < 56 px"
+            "2. Rostro principal menor a 56 px"
             if min_bbox_side < MIN_FACE_SIDE
-            else "Aceptada: requiere escalado"
-            if requires_upscale
             else "Aceptada"
         )
-    elif face_count == 0:
-        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
-        keypoints = None
-        requires_upscale = None
-        quality_rule = "3. Sin rostro detectado"
-    else:
-        x1 = y1 = x2 = y2 = bbox_width = bbox_height = min_bbox_side = None
-        keypoints = None
-        requires_upscale = None
-        quality_rule = "4. Más de un rostro"
 
     detection_records.append({
         "path": row["path"],
@@ -536,11 +536,12 @@ for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
         "min_bbox_side": min_bbox_side,
         "keypoints": keypoints,
         "requires_upscale_after_detection": requires_upscale,
+        "requires_downscale_after_detection": requires_downscale,
         "quality_rule": quality_rule,
     })
 
-    if index % 500 == 0 or index == images_after_rule2.height:
-        print(f"Procesadas {index:,}/{images_after_rule2.height:,} imágenes")
+    if index % 500 == 0 or index == images_after_rule1.height:
+        print(f"Procesadas {index:,}/{images_after_rule1.height:,} imágenes")
 
 detections = pl.from_dicts(detection_records)
 
@@ -560,7 +561,7 @@ rejected_rules = (
     .with_columns(
         pl.lit(None).cast(pl.Int64).alias("identidades_descartadas"),
         (
-            pl.lit(images_after_rule2.height, dtype=pl.Int64)
+            pl.lit(images_after_rule1.height, dtype=pl.Int64)
             - pl.col("imagenes_descartadas").cum_sum()
         ).alias("imagenes_restantes"),
     )
@@ -597,7 +598,9 @@ print("\n=== Pipeline completo de calidad ===")
 display(pipeline_summary)
 
 print(f"\nAceptadas: {final_accepted} imágenes de {final_identities} identidades")
-print(f"Requieren escalado: {accepted.filter(pl.col('requires_upscale_after_detection')).height}")
+print(f"Requieren ampliación: {accepted.filter(pl.col('requires_upscale_after_detection')).height}")
+print(f"Requieren reducción: {accepted.filter(pl.col('requires_downscale_after_detection')).height}")
+print(f"Con múltiples rostros (se conserva el principal): {accepted.filter(pl.col('face_count') > 1).height}")
 
 # %%
 # Ejemplos descartados por cada regla (inspección visual de umbrales)
