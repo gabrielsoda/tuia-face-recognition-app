@@ -794,6 +794,9 @@ print(
     f"Con múltiples rostros (se conserva el principal): {accepted.filter(pl.col('face_count') > 1).height}"
 )
 
+# %% [markdown]
+# Fijamos que ambos lados de la caja facial tengan al menos 56 píxeles para evitar ampliar rostros con muy poca resolución original antes de prepararlos a 112×112.
+
 # %%
 # Ejemplos descartados por cada regla (inspección visual de umbrales)
 rejected_examples = (
