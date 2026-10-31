@@ -23,10 +23,8 @@
 # - Alumno 2 : **Gabriel Soda**
 
 # %%
-from pathlib import Path
-from PIL import Image, UnidentifiedImageError
-from IPython.display import display
 import warnings
+from pathlib import Path
 
 import altair as alt
 import cv2
@@ -35,6 +33,8 @@ import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
+from IPython.display import display
+from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
 
@@ -50,7 +50,8 @@ DETECTION_SIZE = (640, 640)
 # Cada subcarpeta representa una identidad en el dataset Pins.
 records = []
 candidates = sorted(
-    path for path in DATA_DIR.rglob("*")
+    path
+    for path in DATA_DIR.rglob("*")
     if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
 )
 
@@ -88,9 +89,16 @@ for path in candidates:
             {
                 "path": str(path.relative_to(DATA_DIR)),
                 "identity": identity,
-                "width": None, "height": None, "aspect_ratio": None, "pixels": None,
-                "format": None, "mode": None, "brightness": None, "contrast": None,
-                "readable": False, "error": type(error).__name__,
+                "width": None,
+                "height": None,
+                "aspect_ratio": None,
+                "pixels": None,
+                "format": None,
+                "mode": None,
+                "brightness": None,
+                "contrast": None,
+                "readable": False,
+                "error": type(error).__name__,
             }
         )
 
@@ -113,20 +121,26 @@ identity_counts = (
     .sort("count", descending=True)
 )
 
-summary = pl.DataFrame({
-    "métrica": [
-        "Total imágenes", "Imágenes no legibles", "Identidades",
-        "Imgs/identidad (media)", "Imgs/identidad (mediana)", "Mín / Máx por identidad",
-    ],
-    "valor": [
-        str(readable.height),
-        str(unreadable_count),
-        str(identity_counts.height),
-        f"{identity_counts['count'].mean():.1f}",
-        str(identity_counts["count"].median()),
-        f"{identity_counts['count'].min()} / {identity_counts['count'].max()}",
-    ],
-})
+summary = pl.DataFrame(
+    {
+        "métrica": [
+            "Total imágenes",
+            "Imágenes no legibles",
+            "Identidades",
+            "Imgs/identidad (media)",
+            "Imgs/identidad (mediana)",
+            "Mín / Máx por identidad",
+        ],
+        "valor": [
+            str(readable.height),
+            str(unreadable_count),
+            str(identity_counts.height),
+            f"{identity_counts['count'].mean():.1f}",
+            str(identity_counts["count"].median()),
+            f"{identity_counts['count'].min()} / {identity_counts['count'].max()}",
+        ],
+    }
+)
 display(summary)
 
 format_counts = readable.group_by(["format", "mode"]).len().sort("len", descending=True)
@@ -152,19 +166,27 @@ BIN = 20
 N = identity_counts.height
 data = alt.InlineData(values=identity_counts.to_dicts())
 
-hist = alt.Chart(data).mark_bar(opacity=0.6, color="#4c78a8").encode(
-    x=alt.X("count:Q", bin=alt.Bin(step=BIN), title="Imágenes por identidad"),
-    y=alt.Y("count():Q", title="Identidades"),
+hist = (
+    alt.Chart(data)
+    .mark_bar(opacity=0.6, color="#4c78a8")
+    .encode(
+        x=alt.X("count:Q", bin=alt.Bin(step=BIN), title="Imágenes por identidad"),
+        y=alt.Y("count():Q", title="Identidades"),
+    )
 )
 
-kde = alt.Chart(data).transform_density(
-    "count",
-    as_=["count", "density"],
-    extent=[identity_counts["count"].min(), identity_counts["count"].max()],
-    steps=100,
-).transform_calculate(scaled_density=f"datum.density * {N * BIN}").mark_line(
-    color="#e45756", strokeWidth=2
-).encode(x="count:Q", y="scaled_density:Q")
+kde = (
+    alt.Chart(data)
+    .transform_density(
+        "count",
+        as_=["count", "density"],
+        extent=[identity_counts["count"].min(), identity_counts["count"].max()],
+        steps=100,
+    )
+    .transform_calculate(scaled_density=f"datum.density * {N * BIN}")
+    .mark_line(color="#e45756", strokeWidth=2)
+    .encode(x="count:Q", y="scaled_density:Q")
+)
 
 display((hist + kde).properties(width=600, height=300, title="Desbalance de clases"))
 
@@ -172,15 +194,25 @@ display((hist + kde).properties(width=600, height=300, title="Desbalance de clas
 top10 = identity_counts.head(10)
 bottom10 = identity_counts.tail(10).sort("count")
 
-top_chart = alt.Chart(alt.InlineData(values=top10.to_dicts())).mark_bar(color="#4c78a8").encode(
-    x=alt.X("count:Q", title="Imágenes"),
-    y=alt.Y("identity:N", sort="-x", title=None),
-).properties(title="Top 10 identidades", width=300, height=250)
+top_chart = (
+    alt.Chart(alt.InlineData(values=top10.to_dicts()))
+    .mark_bar(color="#4c78a8")
+    .encode(
+        x=alt.X("count:Q", title="Imágenes"),
+        y=alt.Y("identity:N", sort="-x", title=None),
+    )
+    .properties(title="Top 10 identidades", width=300, height=250)
+)
 
-bottom_chart = alt.Chart(alt.InlineData(values=bottom10.to_dicts())).mark_bar(color="#e45756").encode(
-    x=alt.X("count:Q", title="Imágenes"),
-    y=alt.Y("identity:N", sort="x", title=None),
-).properties(title="Bottom 10 identidades", width=300, height=250)
+bottom_chart = (
+    alt.Chart(alt.InlineData(values=bottom10.to_dicts()))
+    .mark_bar(color="#e45756")
+    .encode(
+        x=alt.X("count:Q", title="Imágenes"),
+        y=alt.Y("identity:N", sort="x", title=None),
+    )
+    .properties(title="Bottom 10 identidades", width=300, height=250)
+)
 
 display(top_chart | bottom_chart)
 
@@ -208,16 +240,23 @@ res_bins = (
     .rename({"len": "n"})
 )
 
-res_chart = alt.Chart(alt.InlineData(values=res_bins.to_dicts())).mark_rect().encode(
-    x=alt.X("w_bin:O", title="Ancho (px)"),
-    y=alt.Y("h_bin:O", title="Alto (px)"),
-    color=alt.Color("n:Q", title="Imágenes", scale=alt.Scale(scheme="blues")),
-    tooltip=[
-        alt.Tooltip("w_bin:Q", title="Ancho (px)"),
-        alt.Tooltip("h_bin:Q", title="Alto (px)"),
-        alt.Tooltip("n:Q", title="Imágenes"),
-    ],
-).properties(width=400, height=400, title="Distribución de resoluciones (bins 32 px)")
+res_chart = (
+    alt.Chart(alt.InlineData(values=res_bins.to_dicts()))
+    .mark_rect()
+    .encode(
+        x=alt.X("w_bin:O", title="Ancho (px)"),
+        y=alt.Y("h_bin:O", title="Alto (px)"),
+        color=alt.Color("n:Q", title="Imágenes", scale=alt.Scale(scheme="blues")),
+        tooltip=[
+            alt.Tooltip("w_bin:Q", title="Ancho (px)"),
+            alt.Tooltip("h_bin:Q", title="Alto (px)"),
+            alt.Tooltip("n:Q", title="Imágenes"),
+        ],
+    )
+    .properties(
+        width=400, height=400, title="Distribución de resoluciones (bins 32 px)"
+    )
+)
 display(res_chart)
 
 # %%
@@ -225,15 +264,16 @@ display(res_chart)
 N_IDENTITIES = 5
 N_SAMPLES = 5
 
-sample_idents = identity_counts.head(30).sample(n=N_IDENTITIES, seed=42)["identity"].to_list()
+sample_idents = (
+    identity_counts.head(30).sample(n=N_IDENTITIES, seed=42)["identity"].to_list()
+)
 fig, axes = plt.subplots(N_IDENTITIES, N_SAMPLES, figsize=(10, 2 * N_IDENTITIES))
 
 for i, ident in enumerate(sample_idents):
     n_available = readable.filter(pl.col("identity") == ident).height
     paths = (
         readable.filter(pl.col("identity") == ident)
-        .sample(n=min(N_SAMPLES, n_available), seed=42)
-        ["path"]
+        .sample(n=min(N_SAMPLES, n_available), seed=42)["path"]
         .to_list()
     )
     for j in range(N_SAMPLES):
@@ -273,22 +313,37 @@ photo_long = readable.unpivot(
     value_name="value",
 )
 
-photo_chart = alt.Chart(alt.InlineData(values=photo_long.to_dicts())).mark_bar(opacity=0.7).encode(
-    x=alt.X("value:Q", bin=alt.Bin(maxbins=30), title="Valor"),
-    y=alt.Y("count():Q", title="Imágenes"),
-    color=alt.Color("metric:N", title=None),
-    column=alt.Column("metric:N", title=None),
-).properties(width=280, height=240, title="Distribución de brillo y contraste")
+photo_chart = (
+    alt.Chart(alt.InlineData(values=photo_long.to_dicts()))
+    .mark_bar(opacity=0.7)
+    .encode(
+        x=alt.X("value:Q", bin=alt.Bin(maxbins=30), title="Valor"),
+        y=alt.Y("count():Q", title="Imágenes"),
+        color=alt.Color("metric:N", title=None),
+        column=alt.Column("metric:N", title=None),
+    )
+    .properties(width=280, height=240, title="Distribución de brillo y contraste")
+)
 display(photo_chart)
 
 # %%
 # Casos extremos para inspección visual
-extremes = pl.concat([
-    readable.sort("brightness").head(3).with_columns(pl.lit("brillo bajo").alias("case")),
-    readable.sort("brightness", descending=True).head(3).with_columns(pl.lit("brillo alto").alias("case")),
-    readable.sort("contrast").head(3).with_columns(pl.lit("contraste bajo").alias("case")),
-    readable.sort("contrast", descending=True).head(3).with_columns(pl.lit("contraste alto").alias("case")),
-])
+extremes = pl.concat(
+    [
+        readable.sort("brightness")
+        .head(3)
+        .with_columns(pl.lit("brillo bajo").alias("case")),
+        readable.sort("brightness", descending=True)
+        .head(3)
+        .with_columns(pl.lit("brillo alto").alias("case")),
+        readable.sort("contrast")
+        .head(3)
+        .with_columns(pl.lit("contraste bajo").alias("case")),
+        readable.sort("contrast", descending=True)
+        .head(3)
+        .with_columns(pl.lit("contraste alto").alias("case")),
+    ]
+)
 
 fig, axes = plt.subplots(3, 4, figsize=(12, 9))
 for ax, row in zip(axes.flat, extremes.iter_rows(named=True)):
@@ -300,7 +355,7 @@ for ax, row in zip(axes.flat, extremes.iter_rows(named=True)):
     )
     ax.axis("off")
 
-for ax in axes.flat[len(extremes):]:
+for ax in axes.flat[len(extremes) :]:
     ax.axis("off")
 
 fig.suptitle("Casos extremos de iluminación y contraste", fontsize=12)
@@ -331,8 +386,12 @@ identity_counts_all = (
     .sort("count", descending=True)
 )
 
-eligible_identities = identity_counts_all.filter(pl.col("count") >= MIN_IMAGES_PER_IDENTITY)
-low_count_identities = identity_counts_all.filter(pl.col("count") < MIN_IMAGES_PER_IDENTITY)
+eligible_identities = identity_counts_all.filter(
+    pl.col("count") >= MIN_IMAGES_PER_IDENTITY
+)
+low_count_identities = identity_counts_all.filter(
+    pl.col("count") < MIN_IMAGES_PER_IDENTITY
+)
 
 images_after_rule1 = readable.filter(
     pl.col("identity").is_in(eligible_identities["identity"].implode())
@@ -344,28 +403,30 @@ images_after_rule2 = images_after_rule1.filter(
 )
 
 # Tabla resumen pre-detección
-pre_detection_summary = pl.DataFrame({
-    "regla": [
-        "0. Imágenes legibles (base)",
-        "1. Identidades < 100 imgs",
-        "2. Imagen con lado < 56 px",
-    ],
-    "identidades_descartadas": [
-        None,
-        low_count_identities.height,
-        None,
-    ],
-    "imagenes_descartadas": [
-        0,
-        readable.height - images_after_rule1.height,
-        images_after_rule1.height - images_after_rule2.height,
-    ],
-    "imagenes_restantes": [
-        readable.height,
-        images_after_rule1.height,
-        images_after_rule2.height,
-    ],
-})
+pre_detection_summary = pl.DataFrame(
+    {
+        "regla": [
+            "0. Imágenes legibles (base)",
+            "1. Identidades < 100 imgs",
+            "2. Imagen con lado < 56 px",
+        ],
+        "identidades_descartadas": [
+            None,
+            low_count_identities.height,
+            None,
+        ],
+        "imagenes_descartadas": [
+            0,
+            readable.height - images_after_rule1.height,
+            images_after_rule1.height - images_after_rule2.height,
+        ],
+        "imagenes_restantes": [
+            readable.height,
+            images_after_rule1.height,
+            images_after_rule2.height,
+        ],
+    }
+)
 
 print("=== Resumen pre-detección ===")
 display(pre_detection_summary)
@@ -376,7 +437,7 @@ display(low_count_identities.sort("count"))
 # ## Calibración del umbral de detección
 #
 # **30 imágenes sobre ~17k es demasiado poco**: no representa poses difíciles,
-# rostros lejanos ni oclusiones.  
+# rostros lejanos ni oclusiones.
 # Usamos **n = 200** (~1,2 %), suficiente para ver patrones sin ralentizar
 # la exploración.
 #
@@ -423,19 +484,25 @@ for thresh in thresholds:
         counts[cat] += 1
         if len(examples[thresh][cat]) < 2:
             examples[thresh][cat].append(item["path"])
-    results.append({
-        "threshold": thresh,
-        "0_faces": counts["0"],
-        "1_face": counts["1"],
-        "2+_faces": counts["2+"],
-    })
+    results.append(
+        {
+            "threshold": thresh,
+            "0_faces": counts["0"],
+            "1_face": counts["1"],
+            "2+_faces": counts["2+"],
+        }
+    )
 
 tune_df = pl.from_dicts(results)
 display(tune_df)
 
-best = tune_df.with_columns(
-    (pl.col("1_face") - pl.col("0_faces") - pl.col("2+_faces")).alias("score")
-).sort("score", descending=True).head(1)
+best = (
+    tune_df.with_columns(
+        (pl.col("1_face") - pl.col("0_faces") - pl.col("2+_faces")).alias("score")
+    )
+    .sort("score", descending=True)
+    .head(1)
+)
 print("Mejor threshold según score rápido:")
 display(best)
 
@@ -457,12 +524,15 @@ for i, thresh in enumerate(thresholds):
             if img_resized is not None:
                 ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
         else:
-            ax.text(0.5, 0.5, "Sin casos", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "Sin casos", ha="center", va="center", transform=ax.transAxes
+            )
         ax.axis("off")
 
 fig.suptitle("Ejemplo por threshold y categoría (1ª imagen disponible)", fontsize=12)
 plt.tight_layout()
 plt.show()
+
 
 # %%
 # Función simple para inspeccionar categorías a un threshold dado
@@ -510,7 +580,8 @@ def show_threshold_samples(
     rng = np.random.default_rng(seed)
     matched = (
         rng.choice(all_matched, size=min(n, len(all_matched)), replace=False).tolist()
-        if all_matched else []
+        if all_matched
+        else []
     )
 
     cols = min(n, 3)
@@ -534,7 +605,10 @@ def show_threshold_samples(
                 ax.imshow(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
         ax.axis("off")
 
-    fig.suptitle(f"t={threshold} | categoría={category} ({len(matched)} encontradas)", fontsize=12)
+    fig.suptitle(
+        f"t={threshold} | categoría={category} ({len(matched)} encontradas)",
+        fontsize=12,
+    )
     plt.tight_layout()
     plt.show()
     return matched
@@ -584,17 +658,23 @@ for index, row in enumerate(images_after_rule2.iter_rows(named=True), start=1):
         requires_upscale = None
         quality_rule = "4. Más de un rostro"
 
-    detection_records.append({
-        "path": row["path"],
-        "identity": row["identity"],
-        "face_count": face_count,
-        "bbox_x1": x1, "bbox_y1": y1, "bbox_x2": x2, "bbox_y2": y2,
-        "bbox_width": bbox_width, "bbox_height": bbox_height,
-        "min_bbox_side": min_bbox_side,
-        "keypoints": keypoints,
-        "requires_upscale_after_detection": requires_upscale,
-        "quality_rule": quality_rule,
-    })
+    detection_records.append(
+        {
+            "path": row["path"],
+            "identity": row["identity"],
+            "face_count": face_count,
+            "bbox_x1": x1,
+            "bbox_y1": y1,
+            "bbox_x2": x2,
+            "bbox_y2": y2,
+            "bbox_width": bbox_width,
+            "bbox_height": bbox_height,
+            "min_bbox_side": min_bbox_side,
+            "keypoints": keypoints,
+            "requires_upscale_after_detection": requires_upscale,
+            "quality_rule": quality_rule,
+        }
+    )
 
     if index % 500 == 0 or index == images_after_rule2.height:
         print(f"Procesadas {index:,}/{images_after_rule2.height:,} imágenes")
@@ -612,8 +692,7 @@ post_detection_counts = (
 
 accepted = detections.filter(pl.col("quality_rule").str.starts_with("Aceptada"))
 rejected_rules = (
-    post_detection_counts
-    .filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
+    post_detection_counts.filter(~pl.col("quality_rule").str.starts_with("Aceptada"))
     .with_columns(
         pl.lit(None).cast(pl.Int64).alias("identidades_descartadas"),
         (
@@ -622,39 +701,49 @@ rejected_rules = (
         ).alias("imagenes_restantes"),
     )
     .rename({"quality_rule": "regla"})
-    .select([
-        "regla",
-        "identidades_descartadas",
-        "imagenes_descartadas",
-        "imagenes_restantes",
-    ])
+    .select(
+        [
+            "regla",
+            "identidades_descartadas",
+            "imagenes_descartadas",
+            "imagenes_restantes",
+        ]
+    )
 )
 
 # Pipeline completo: conteo por regla
-pipeline_summary = pl.concat([
-    pre_detection_summary,
-    rejected_rules,
-])
+pipeline_summary = pl.concat(
+    [
+        pre_detection_summary,
+        rejected_rules,
+    ]
+)
 
 # Total final aceptado
 final_accepted = accepted.height
 final_identities = accepted["identity"].n_unique()
 
-pipeline_summary = pl.concat([
-    pipeline_summary,
-    pl.DataFrame({
-        "regla": ["Aceptadas (todas las reglas)"],
-        "identidades_descartadas": [None],
-        "imagenes_descartadas": [0],
-        "imagenes_restantes": [final_accepted],
-    }),
-])
+pipeline_summary = pl.concat(
+    [
+        pipeline_summary,
+        pl.DataFrame(
+            {
+                "regla": ["Aceptadas (todas las reglas)"],
+                "identidades_descartadas": [None],
+                "imagenes_descartadas": [0],
+                "imagenes_restantes": [final_accepted],
+            }
+        ),
+    ]
+)
 
 print("\n=== Pipeline completo de calidad ===")
 display(pipeline_summary)
 
 print(f"\nAceptadas: {final_accepted} imágenes de {final_identities} identidades")
-print(f"Requieren escalado: {accepted.filter(pl.col('requires_upscale_after_detection')).height}")
+print(
+    f"Requieren escalado: {accepted.filter(pl.col('requires_upscale_after_detection')).height}"
+)
 
 # %%
 # Ejemplos descartados por cada regla (inspección visual de umbrales)
@@ -689,7 +778,9 @@ else:
 # %%
 # Antes/después: usamos los 5 landmarks almacenados por SCRFD para alinear a FACE_SIZE.
 alignment_examples = accepted.sample(n=min(4, accepted.height), seed=42)
-fig, axes = plt.subplots(alignment_examples.height, 2, figsize=(8, 3 * alignment_examples.height))
+fig, axes = plt.subplots(
+    alignment_examples.height, 2, figsize=(8, 3 * alignment_examples.height)
+)
 axes = np.atleast_2d(axes)
 
 for axis_pair, row in zip(axes, alignment_examples.iter_rows(named=True)):
@@ -765,16 +856,22 @@ print(
 # Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
 
 # %%
-from sklearn.manifold import TSNE
 from sklearn.cluster import KMeans
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
+from sklearn.manifold import TSNE
+from sklearn.metrics import (
+    adjusted_rand_score,
+    normalized_mutual_info_score,
+    silhouette_score,
+)
 
 # Cargamos ArcFace (reconocimiento + detección ya está en buffalo_l)
 face_analysis = FaceAnalysis(
     name="buffalo_l",
     providers=["CPUExecutionProvider"],
 )
-face_analysis.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
+face_analysis.prepare(
+    ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE
+)
 
 # Extraemos embeddings sobre `accepted` (ya tienen exactamente 1 rostro)
 embedding_records = []
@@ -785,21 +882,27 @@ for row in accepted.iter_rows(named=True):
     faces = face_analysis.get(image_bgr)
     if len(faces) == 1:
         emb = faces[0].embedding
-        embedding_records.append({
-            "path": row["path"],
-            "identity": row["identity"],
-            "embedding": emb,
-        })
+        embedding_records.append(
+            {
+                "path": row["path"],
+                "identity": row["identity"],
+                "embedding": emb,
+            }
+        )
 
 embeddings_df = pl.from_dicts(embedding_records)
 X = np.vstack(embeddings_df["embedding"].to_list())
 y = embeddings_df["identity"].to_list()
-print(f"Embeddings extraídos: {len(y)} imágenes de {embeddings_df['identity'].n_unique()} identidades")
+print(
+    f"Embeddings extraídos: {len(y)} imágenes de {embeddings_df['identity'].n_unique()} identidades"
+)
 
 # t-SNE
 n_samples = min(2000, X.shape[0])
 tsne_idx = np.random.RandomState(42).choice(X.shape[0], n_samples, replace=False)
-X_tsne = TSNE(n_components=2, random_state=42, perplexity=30, init="pca", learning_rate="auto").fit_transform(X[tsne_idx])
+X_tsne = TSNE(
+    n_components=2, random_state=42, perplexity=30, init="pca", learning_rate="auto"
+).fit_transform(X[tsne_idx])
 
 # K-Means con k = n identidades
 n_clusters = embeddings_df["identity"].n_unique()
@@ -810,26 +913,45 @@ ari = adjusted_rand_score(y, labels_km)
 nmi = normalized_mutual_info_score(y, labels_km)
 sil = silhouette_score(X, labels_km)
 
-metrics = pl.DataFrame({
-    "métrica": ["ARI (K-Means vs identidad)", "NMI (K-Means vs identidad)", "Silhouette (K-Means)"],
-    "valor": [round(ari, 3), round(nmi, 3), round(sil, 3)],
-})
+metrics = pl.DataFrame(
+    {
+        "métrica": [
+            "ARI (K-Means vs identidad)",
+            "NMI (K-Means vs identidad)",
+            "Silhouette (K-Means)",
+        ],
+        "valor": [round(ari, 3), round(nmi, 3), round(sil, 3)],
+    }
+)
 display(metrics)
 
 # Plot t-SNE con Altair
-tsne_data = pl.DataFrame({
-    "x": X_tsne[:, 0],
-    "y": X_tsne[:, 1],
-    "identity": [y[i] for i in tsne_idx],
-    "kmeans_label": [int(labels_km[i]) for i in tsne_idx],
-})
+tsne_data = pl.DataFrame(
+    {
+        "x": X_tsne[:, 0],
+        "y": X_tsne[:, 1],
+        "identity": [y[i] for i in tsne_idx],
+        "kmeans_label": [int(labels_km[i]) for i in tsne_idx],
+    }
+)
 
-scatter = alt.Chart(tsne_data.to_dicts()).mark_circle(size=30, opacity=0.6).encode(
-    x=alt.X("x:Q", title="t-SNE 1"),
-    y=alt.Y("y:Q", title="t-SNE 2"),
-    color=alt.Color("identity:N", title="Identidad", scale=alt.Scale(scheme="category20")),
-    tooltip=["identity:N"],
-).properties(width=550, height=450, title="t-SNE de embeddings ArcFace (coloreado por identidad)")
+scatter = (
+    alt.Chart(tsne_data.to_dicts())
+    .mark_circle(size=30, opacity=0.6)
+    .encode(
+        x=alt.X("x:Q", title="t-SNE 1"),
+        y=alt.Y("y:Q", title="t-SNE 2"),
+        color=alt.Color(
+            "identity:N", title="Identidad", scale=alt.Scale(scheme="category20")
+        ),
+        tooltip=["identity:N"],
+    )
+    .properties(
+        width=550,
+        height=450,
+        title="t-SNE de embeddings ArcFace (coloreado por identidad)",
+    )
+)
 
 display(scatter)
 
@@ -849,18 +971,32 @@ display(scatter)
 # %%
 import albumentations as A
 
-augmentation_pipeline = A.Compose([
-    A.HorizontalFlip(p=0.5),                         # simétrico en rostros (común en datasets)
-    A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.5),  # pequeñas variaciones de pose
-    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),   # iluminación variable
-    A.OneOf([
-        A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-        A.MotionBlur(blur_limit=3, p=1.0),
-    ], p=0.3),                                        # desenfoque leve (cámara, movimiento)
-    A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),      # ruido de sensor
-    A.ImageCompression(quality_lower=70, quality_upper=95, p=0.2),  # compresión JPEG
-    A.CoarseDropout(max_holes=3, max_height=16, max_width=16, min_holes=1, p=0.2),  # oclusiones parciales
-])
+augmentation_pipeline = A.Compose(
+    [
+        A.HorizontalFlip(p=0.5),  # simétrico en rostros (común en datasets)
+        A.ShiftScaleRotate(
+            shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.5
+        ),  # pequeñas variaciones de pose
+        A.RandomBrightnessContrast(
+            brightness_limit=0.2, contrast_limit=0.2, p=0.5
+        ),  # iluminación variable
+        A.OneOf(
+            [
+                A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+                A.MotionBlur(blur_limit=3, p=1.0),
+            ],
+            p=0.3,
+        ),  # desenfoque leve (cámara, movimiento)
+        A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),  # ruido de sensor
+        A.ImageCompression(
+            quality_lower=70, quality_upper=95, p=0.2
+        ),  # compresión JPEG
+        A.CoarseDropout(
+            max_holes=3, max_height=16, max_width=16, min_holes=1, p=0.2
+        ),  # oclusiones parciales
+    ]
+)
+
 
 # Grilla: una imagen + 8 aumentaciones
 def show_augmentations(image_path, n=8):
@@ -872,12 +1008,15 @@ def show_augmentations(image_path, n=8):
     axes[0].axis("off")
     for i in range(n):
         aug = augmentation_pipeline(image=img)["image"]
-        axes[i + 1].imshow(cv2.cvtColor(aug, cv2.COLOR_BGR2RGB) if aug.shape[-1] == 3 else aug)
-        axes[i + 1].set_title(f"Aug {i+1}")
+        axes[i + 1].imshow(
+            cv2.cvtColor(aug, cv2.COLOR_BGR2RGB) if aug.shape[-1] == 3 else aug
+        )
+        axes[i + 1].set_title(f"Aug {i + 1}")
         axes[i + 1].axis("off")
     fig.suptitle("Pipeline de augmentation", fontsize=14)
     plt.tight_layout()
     plt.show()
+
 
 sample_img = accepted.sample(n=1, seed=42)["path"].to_list()[0]
 show_augmentations(DATA_DIR / sample_img)
@@ -921,14 +1060,24 @@ split_source = (
         pl.struct(["identity", "path"]).hash(seed=SEED).alias("_split_order")
     )
     .sort(["identity", "_split_order"])
-    .with_columns([
-        (pl.col("path").cum_count().over("identity") - 1).alias("_position"),
-        pl.len().over("identity").alias("_identity_size"),
-    ])
-    .with_columns([
-        (pl.col("_identity_size") * TRAIN_RATIO).floor().cast(pl.Int64).alias("_train_end"),
-        (pl.col("_identity_size") * (TRAIN_RATIO + VAL_RATIO)).floor().cast(pl.Int64).alias("_val_end"),
-    ])
+    .with_columns(
+        [
+            (pl.col("path").cum_count().over("identity") - 1).alias("_position"),
+            pl.len().over("identity").alias("_identity_size"),
+        ]
+    )
+    .with_columns(
+        [
+            (pl.col("_identity_size") * TRAIN_RATIO)
+            .floor()
+            .cast(pl.Int64)
+            .alias("_train_end"),
+            (pl.col("_identity_size") * (TRAIN_RATIO + VAL_RATIO))
+            .floor()
+            .cast(pl.Int64)
+            .alias("_val_end"),
+        ]
+    )
     .with_columns(
         pl.when(pl.col("_position") < pl.col("_train_end"))
         .then(pl.lit("train"))
@@ -953,28 +1102,36 @@ leak_train_test = len(train_paths & test_paths)
 leak_val_test = len(val_paths & test_paths)
 total_identities = balanced["identity"].n_unique()
 
-split_summary = pl.DataFrame({
-    "split": ["train", "val", "test", "total"],
-    "identidades": [
-        train_df["identity"].n_unique(),
-        val_df["identity"].n_unique(),
-        test_df["identity"].n_unique(),
-        total_identities,
-    ],
-    "imagenes": [train_df.height, val_df.height, test_df.height, balanced.height],
-    "imgs_por_identidad": [
-        round(train_df.height / train_df["identity"].n_unique(), 1),
-        round(val_df.height / val_df["identity"].n_unique(), 1),
-        round(test_df.height / test_df["identity"].n_unique(), 1),
-        round(balanced.height / total_identities, 1),
-    ],
-})
+split_summary = pl.DataFrame(
+    {
+        "split": ["train", "val", "test", "total"],
+        "identidades": [
+            train_df["identity"].n_unique(),
+            val_df["identity"].n_unique(),
+            test_df["identity"].n_unique(),
+            total_identities,
+        ],
+        "imagenes": [train_df.height, val_df.height, test_df.height, balanced.height],
+        "imgs_por_identidad": [
+            round(train_df.height / train_df["identity"].n_unique(), 1),
+            round(val_df.height / val_df["identity"].n_unique(), 1),
+            round(test_df.height / test_df["identity"].n_unique(), 1),
+            round(balanced.height / total_identities, 1),
+        ],
+    }
+)
 
 print("=== Splits ===")
 display(split_summary)
-print(f"Fuga train↔val: {leak_train_val}, train↔test: {leak_train_test}, val↔test: {leak_val_test}")
-assert leak_train_val == 0 and leak_train_test == 0 and leak_val_test == 0, "Fuga de datos detectada"
-assert all(df["identity"].n_unique() == total_identities for df in [train_df, val_df, test_df]), "Faltan identidades en algún split"
+print(
+    f"Fuga train↔val: {leak_train_val}, train↔test: {leak_train_test}, val↔test: {leak_val_test}"
+)
+assert leak_train_val == 0 and leak_train_test == 0 and leak_val_test == 0, (
+    "Fuga de datos detectada"
+)
+assert all(
+    df["identity"].n_unique() == total_identities for df in [train_df, val_df, test_df]
+), "Faltan identidades en algún split"
 
 # Guardar splits
 OUTPUT_DIR = Path("output")
@@ -985,12 +1142,16 @@ val_df.select(["path", "identity"]).write_csv(OUTPUT_DIR / "val.csv")
 test_df.select(["path", "identity"]).write_csv(OUTPUT_DIR / "test.csv")
 
 with open(OUTPUT_DIR / "split_info.json", "w", encoding="utf-8") as f:
-    json.dump({
-        "seed": SEED,
-        "ratios": {"train": TRAIN_RATIO, "val": VAL_RATIO, "test": TEST_RATIO},
-        "strategy": "closed-set: split estratificado dentro de cada identidad",
-        "identities": balanced["identity"].sort().to_list(),
-    }, f, indent=2)
+    json.dump(
+        {
+            "seed": SEED,
+            "ratios": {"train": TRAIN_RATIO, "val": VAL_RATIO, "test": TEST_RATIO},
+            "strategy": "closed-set: split estratificado dentro de cada identidad",
+            "identities": balanced["identity"].sort().to_list(),
+        },
+        f,
+        indent=2,
+    )
 
 print(f"Splits guardados en {OUTPUT_DIR}/")
 
