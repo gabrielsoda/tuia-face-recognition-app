@@ -29,12 +29,12 @@ from pathlib import Path
 import altair as alt
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
 from IPython.display import display
-from matplotlib.patches import Rectangle
 from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
@@ -547,7 +547,6 @@ display(tune_df)
 # Ejecutamos el detector con umbral 0,1 y guardamos las detecciones que devuelve.
 # Sobreeso, probamos umbrales más exigentes como 0,3 o 0,6, sin ejecutar nuevamente la red.
 
-
 # %%
 def show_threshold_samples(
     threshold: float,
@@ -876,6 +875,9 @@ else:
         plt.show()
 
 # %% [markdown]
+# Los ejemplos descartados por tamaño presentan rostros localizados con scores superiores al umbral de detección, pero con lados mínimos de 53–54 px, próximos al corte de 56 px.
+
+# %% [markdown]
 # ## Detección, landmarks y alineación con SCRFD
 #
 # A continuación visualizamos el pipeline `detectar → validar → alinear` sobre las imágenes que pasaron todas las reglas de calidad.
@@ -958,6 +960,20 @@ balanced = (
 print(
     f"Subset balanceado: {balanced['identity'].n_unique()} identidades "
     f"× {MAX_PER_ID} = {balanced.height} imágenes"
+)
+
+# %%
+print("Identidades excluidas después de la limpieza:")
+display(accepted_counts.filter(pl.col("count") < MIN_PER_ID))
+
+eligible_images = accepted.filter(pl.col("identity").is_in(kept))
+
+print("Imágenes aceptadas antes del balanceo:", accepted.height)
+print("Imágenes de las identidades conservadas:", eligible_images.height)
+print("Imágenes seleccionadas:", balanced.height)
+print(
+    "Imágenes fuera de la selección por el máximo definido:",
+    eligible_images.height - balanced.height,
 )
 
 # %% [markdown]
