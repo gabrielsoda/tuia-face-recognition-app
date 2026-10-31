@@ -43,7 +43,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 FACE_SIZE = 112
 MIN_FACE_SIDE = FACE_SIZE // 2
 DETECTION_THRESHOLD = 0.5
-DETECTION_SIZE = (640, 640)
+DETECTION_SIZE = (160, 160)
 
 # %%
 # Escaneamos metadatos: no cargamos todos los píxeles ni imágenes completas en memoria.
