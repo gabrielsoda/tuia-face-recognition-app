@@ -345,7 +345,7 @@ extremes = pl.concat(
     ]
 )
 
-fig, axes = plt.subplots(3, 4, figsize=(12, 9))
+fig, axes = plt.subplots(4, 3, figsize=(16, 12))
 for ax, row in zip(axes.flat, extremes.iter_rows(named=True)):
     with Image.open(DATA_DIR / row["path"]) as img:
         ax.imshow(img.convert("RGB"))
@@ -532,7 +532,6 @@ for i, thresh in enumerate(thresholds):
 fig.suptitle("Ejemplo por threshold y categoría (1ª imagen disponible)", fontsize=12)
 plt.tight_layout()
 plt.show()
-
 
 # %%
 # Función simple para inspeccionar categorías a un threshold dado
