@@ -683,7 +683,10 @@ accepted_counts = (
     .rename({"len": "count"})
     .sort("count", descending=True)
 )
+
 kept = accepted_counts.filter(pl.col("count") >= MIN_PER_ID)["identity"].to_list()
+
+print("Se descartan {} identidades con menos de {} imágenes aceptadas".format(len(accepted_counts) - len(kept), MIN_PER_ID))
 
 if not kept:
     display(accepted_counts)
@@ -708,7 +711,7 @@ print(
 # %% [markdown]
 # ## Clustering exploratorio
 #
-# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
+# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre el **subset balanceado**: 100 imágenes aceptadas por identidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
 
 # %%
 from sklearn.manifold import TSNE
@@ -722,19 +725,20 @@ face_analysis = FaceAnalysis(
 )
 face_analysis.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
 
-# Extraemos embeddings sobre `accepted` (ya tienen exactamente 1 rostro)
+# Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
+# Si hay varias detecciones usamos el rostro principal.
 embedding_records = []
-for row in accepted.iter_rows(named=True):
+for row in balanced.iter_rows(named=True):
     image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
     if image_bgr is None:
         continue
     faces = face_analysis.get(image_bgr)
-    if len(faces) == 1:
-        emb = faces[0].embedding
+    if faces:
+        face = max(faces, key=lambda detected_face: float(detected_face.det_score))
         embedding_records.append({
             "path": row["path"],
             "identity": row["identity"],
-            "embedding": emb,
+            "embedding": face.embedding,
         })
 
 embeddings_df = pl.from_dicts(embedding_records)
@@ -745,7 +749,13 @@ print(f"Embeddings extraídos: {len(y)} imágenes de {embeddings_df['identity'].
 # t-SNE
 n_samples = min(2000, X.shape[0])
 tsne_idx = np.random.RandomState(42).choice(X.shape[0], n_samples, replace=False)
-X_tsne = TSNE(n_components=2, random_state=42, perplexity=30, init="pca", learning_rate="auto").fit_transform(X[tsne_idx])
+X_tsne = TSNE(
+    n_components=2,
+    random_state=42,
+    perplexity=30,
+    init="pca",
+    learning_rate="auto",
+).fit_transform(X[tsne_idx])
 
 # K-Means con k = n identidades
 n_clusters = embeddings_df["identity"].n_unique()
@@ -757,7 +767,11 @@ nmi = normalized_mutual_info_score(y, labels_km)
 sil = silhouette_score(X, labels_km)
 
 metrics = pl.DataFrame({
-    "métrica": ["ARI (K-Means vs identidad)", "NMI (K-Means vs identidad)", "Silhouette (K-Means)"],
+    "métrica": [
+        "ARI (K-Means vs identidad)",
+        "NMI (K-Means vs identidad)",
+        "Silhouette (K-Means)",
+    ],
     "valor": [round(ari, 3), round(nmi, 3), round(sil, 3)],
 })
 display(metrics)
@@ -770,12 +784,22 @@ tsne_data = pl.DataFrame({
     "kmeans_label": [int(labels_km[i]) for i in tsne_idx],
 })
 
-scatter = alt.Chart(tsne_data.to_dicts()).mark_circle(size=30, opacity=0.6).encode(
+scatter = alt.Chart(
+    alt.InlineData(values=tsne_data.to_dicts())
+).mark_circle(size=30, opacity=0.6).encode(
     x=alt.X("x:Q", title="t-SNE 1"),
     y=alt.Y("y:Q", title="t-SNE 2"),
-    color=alt.Color("identity:N", title="Identidad", scale=alt.Scale(scheme="category20")),
-    tooltip=["identity:N"],
-).properties(width=550, height=450, title="t-SNE de embeddings ArcFace (coloreado por identidad)")
+    color=alt.Color(
+        "identity:N",
+        title="Identidad",
+        scale=alt.Scale(scheme="category20"),
+    ),
+    tooltip=["identity:N", "kmeans_label:Q"],
+).properties(
+    width=550,
+    height=450,
+    title="t-SNE de embeddings ArcFace (coloreado por identidad)",
+)
 
 display(scatter)
 
