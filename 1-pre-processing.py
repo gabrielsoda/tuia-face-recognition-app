@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv
+#     display_name: .venv (3.12.11)
 #     language: python
 #     name: python3
 # ---
@@ -23,8 +23,10 @@
 # - Alumno 2 : **Gabriel Soda**
 
 # %%
-import warnings
 from pathlib import Path
+from PIL import Image, UnidentifiedImageError
+from IPython.display import display
+import warnings
 
 import altair as alt
 import cv2
@@ -33,8 +35,6 @@ import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
-from IPython.display import display
-from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
 
@@ -433,11 +433,45 @@ display(pre_detection_summary)
 print(f"Identidades descartadas por regla 1 ({low_count_identities.height}):")
 display(low_count_identities.sort("count"))
 
+# %%
+smallest = (
+    readable.with_columns(pl.min_horizontal("width", "height").alias("min_side"))
+    .sort(["min_side", "pixels", "path"])
+    .head(12)
+)
+
+fig, axes = plt.subplots(3, 4, figsize=(12, 10))
+
+for ax, row in zip(axes.flat, smallest.iter_rows(named=True)):
+    with Image.open(DATA_DIR / row["path"]) as image:
+        ax.imshow(image.convert("RGB"))
+
+    ax.set_title(
+        f"{row['identity']}\n"
+        f"{row['width']} × {row['height']} px | "
+        f"lado menor: {row['min_side']} px",
+        fontsize=9,
+    )
+    ax.axis("off")
+
+for ax in axes.flat[smallest.height :]:
+    ax.axis("off")
+
+fig.suptitle("Imágenes con menor lado mínimo")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# Preguntas abiertas luego de esta exploración de imagenes pequeñas:
+#
+# - El detector encuentra estas caras? comprobar graficando boxes, scores y landmarks.
+# - ayudan a entrenar el reconocedor? implica comparar entrenamientos -> ablación, quitar un componente y observar qué cambia.
+
 # %% [markdown]
 # ## Calibración del umbral de detección
 #
 # **30 imágenes sobre ~17k es demasiado poco**: no representa poses difíciles,
-# rostros lejanos ni oclusiones.
+# rostros lejanos ni oclusiones.  
 # Usamos **n = 200** (~1,2 %), suficiente para ver patrones sin ralentizar
 # la exploración.
 #
@@ -855,8 +889,8 @@ print(
 # Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre las imágenes que pasaron el control de calidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
 
 # %%
-from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
+from sklearn.cluster import KMeans
 from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
