@@ -310,14 +310,20 @@ plt.show()
 # %% [markdown]
 # ## Control de calidad y limpieza
 #
-# Aplicamos reglas de filtrado **en orden**, reportando cuántas imágenes descarta cada una. El orden prioriza eficiencia: descartamos identidades con muy pocas muestras **antes** de correr detección facial.
+# Aplicamos reglas de filtrado **en orden**, reportando cuántas imágenes descarta cada una.
+# El orden prioriza eficiencia: descartamos identidades con muy pocas muestras **antes**
+# de correr detección facial. La detección se usa luego para verificar que exista al menos
+# un rostro y para seleccionar el rostro principal que se alineará.
 #
-# Reglas:
-# 1. Identidades con $< 100$ imágenes (descartamos la identidad completa).
-# 2. Imagen con algún lado $< 56$ px (no puede contener una cara de $56 \times 56$).
-# 3. Detector: 0 rostros detectados.
-# 4. Detector: más de 1 rostro detectado.
-# 5. Bbox del rostro con lado $< 56$ px.
+# Reglas aplicadas:
+# 1. Identidades con menos de 100 imágenes (descartamos la identidad completa).
+# 2. Rostro principal con lado mínimo de la bbox <56px.
+# 3. Detector: 0 rostros detectados (imagen OK pero sin cara visible).
+#
+# Si el detector encuentra uno o más rostros, se conserva el de mayor confianza como rostro
+# principal. La cantidad de detecciones se registra como metadato, pero las imágenes con
+# múltiples rostros no se descartan. Las caras aceptadas se normalizan a 112x112 px:
+# las menores se amplían y las mayores se reducen.
 
 # %%
 # Control de calidad: pipeline de filtrado con conteo por regla
@@ -338,32 +344,23 @@ images_after_rule1 = readable.filter(
     pl.col("identity").is_in(eligible_identities["identity"].implode())
 )
 
-# --- Regla 2: resolución mínima de imagen ---
-images_after_rule2 = images_after_rule1.filter(
-    (pl.col("width") >= MIN_FACE_SIDE) & (pl.col("height") >= MIN_FACE_SIDE)
-)
-
-# Tabla resumen pre-detección
+# Pre-detección: Regla 1
 pre_detection_summary = pl.DataFrame({
     "regla": [
         "0. Imágenes legibles (base)",
         "1. Identidades < 100 imgs",
-        "2. Imagen con lado < 56 px",
     ],
     "identidades_descartadas": [
         None,
         low_count_identities.height,
-        None,
     ],
     "imagenes_descartadas": [
         0,
         readable.height - images_after_rule1.height,
-        images_after_rule1.height - images_after_rule2.height,
     ],
     "imagenes_restantes": [
         readable.height,
         images_after_rule1.height,
-        images_after_rule2.height,
     ],
 })
 
