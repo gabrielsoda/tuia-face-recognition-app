@@ -29,6 +29,7 @@ from pathlib import Path
 import altair as alt
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
@@ -497,12 +498,23 @@ for row in test_sample.iter_rows(named=True):
     faces = tune_detector.get(img)
     face_data = []
     for f in faces:
-        min_side = min(
-            int(f.bbox[2]) - int(f.bbox[0]),
-            int(f.bbox[3]) - int(f.bbox[1]),
+        face_data.append(
+            {
+                "score": float(f.det_score),
+                "bbox": np.asarray(f.bbox, dtype=float).tolist(),
+                "keypoints": (
+                    np.asarray(f.kps, dtype=float).tolist()
+                    if f.kps is not None else None
+                ),
+            }
         )
-        face_data.append({"score": float(f.det_score)})
-    detection_cache.append({"path": row["path"], "faces": face_data})
+    detection_cache.append(
+        {
+            "path": row["path"],
+            "image_size": [int(img.shape[1]), int(img.shape[0])],
+            "faces": face_data,
+        }
+    )
 
 for thresh in thresholds:
     counts = {"0": 0, "1": 0, "2+": 0}
@@ -525,51 +537,113 @@ tune_df = pl.from_dicts(results)
 display(tune_df)
 
 
+# %% [markdown]
+# Inspección sin repetir inferencia, sobre coordenadas de la imagen original:
+# **verde**: mayor score entre las detecciones que pasan el umbral;
+# **naranja**: otras aceptadas; **gris discontinuo**: candidatas bajo el umbral.
+# Los puntos indican landmarks. La identidad es la etiqueta
+# esperada, no es una predicción. El score es de detección.
+# Ejecutamos el detector con umbral 0,1 y guardamos las detecciones que devuelve.
+# Sobreeso, probamos umbrales más exigentes como 0,3 o 0,6, sin ejecutar nuevamente la red.
+
 # %%
-# Función simple para inspeccionar categorías a un threshold dado
 def show_threshold_samples(
     threshold: float,
-    category: str,  # "0", "1", o "2+"
+    category: str,
     detection_cache,
     n: int = 6,
     seed: int = 42,
+    show_below_threshold: bool = True,
 ):
-    """Muestra N imágenes de una categoría para un threshold dado."""
+    """Dibuja cajas, scores y landmarks cacheados; devuelve las rutas mostradas."""
+    if category not in {"0", "1", "2+"}:
+        raise ValueError("category debe ser '0', '1' o '2+'.")
+    if n < 1:
+        raise ValueError("n debe ser mayor que cero.")
 
     all_matched = []
     for item in detection_cache:
-        n_faces = sum(1 for f in item["faces"] if f["score"] >= threshold)
+        n_faces = sum(face["score"] >= threshold for face in item["faces"])
         cat = "0" if n_faces == 0 else "1" if n_faces == 1 else "2+"
         if cat == category:
             all_matched.append(item["path"])
 
     n = min(n, len(all_matched))
+    if n == 0:
+        print(f"No hay imágenes para t={threshold}, categoría={category}.")
+        return []
 
+    cache_by_path = {item["path"]: item for item in detection_cache}
     rng = np.random.default_rng(seed)
-    matched = (
-        rng.choice(all_matched, size=n, replace=False).tolist() if all_matched else []
-    )
-
-    cols = min(n, 5)
+    matched = rng.choice(all_matched, size=n, replace=False).tolist()
+    cols = min(n, 3 if n <= 6 else 5)
     rows = (n + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(3 * cols, 3 * rows))
-    if rows == 1 and cols == 1:
-        axes = np.array([axes])
-    elif rows == 1:
-        axes = axes.reshape(1, -1)
-    elif cols == 1:
-        axes = axes.reshape(-1, 1)
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(4 * cols, 4 * rows), squeeze=False
+    )
     axes = axes.flatten()
 
-    for i in range(n):
-        ax = axes[i]
-        if i < len(matched):
-            img = cv2.imread(str(DATA_DIR / matched[i]))
-            ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    for ax, path in zip(axes, matched):
+        img = cv2.imread(str(DATA_DIR / path))
+        if img is None:
+            ax.set_title(f"No se pudo leer: {path}", fontsize=9)
+            ax.axis("off")
+            continue
+
+        faces = cache_by_path[path]["faces"]
+        if any("bbox" not in face for face in faces):
+            plt.close(fig)
+            raise ValueError(
+                "La caché no tiene cajas. Volvé a ejecutar la celda de detección."
+            )
+        passing = [i for i, face in enumerate(faces) if face["score"] >= threshold]
+        selected = max(passing, key=lambda i: faces[i]["score"], default=None)
+        ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+        for i, face in enumerate(faces):
+            passes = face["score"] >= threshold
+            if not passes and not show_below_threshold:
+                continue
+            color = (
+                "limegreen" if i == selected
+                else "darkorange" if passes
+                else "gray"
+            )
+            x1, y1, x2, y2 = face["bbox"]
+            ax.add_patch(
+                Rectangle(
+                    (x1, y1), x2 - x1, y2 - y1,
+                    fill=False, edgecolor=color,
+                    linewidth=2 if passes else 1,
+                    linestyle="-" if passes else "--",
+                    alpha=1 if passes else 0.6,
+                )
+            )
+            label = f"#{i + 1}: {face['score']:.3f}"
+            if i == selected:
+                label += " principal"
+            elif not passes:
+                label += " < umbral"
+            ax.text(
+                max(0, x1), max(0, y1), label, fontsize=8, color="white",
+                va="top", bbox={"facecolor": color, "alpha": 0.8, "pad": 1},
+            )
+            if face.get("keypoints") is not None:
+                points = np.asarray(face["keypoints"])
+                ax.scatter(points[:, 0], points[:, 1], s=12, c=color)
+
+        # Mantener la vista original aunque una caja predicha exceda sus bordes.
+        ax.set_xlim(-0.5, img.shape[1] - 0.5)
+        ax.set_ylim(img.shape[0] - 0.5, -0.5)
+        identity = Path(path).parent.name.removeprefix("pins_")
+        ax.set_title(f"{identity}\n{len(passing)} detecciones >= {threshold}", fontsize=9)
         ax.axis("off")
 
+    for ax in axes[len(matched):]:
+        ax.axis("off")
     fig.suptitle(
-        f"t={threshold} | categoría={category} ({len(matched)} encontradas)",
+        f"t={threshold} | categoría={category} | {len(matched)} imágenes\n"
+        "Verde: mayor score · Naranja: otras aceptadas · Gris: bajo umbral",
         fontsize=12,
     )
     plt.tight_layout()
