@@ -977,6 +977,9 @@ print(
 )
 
 # %% [markdown]
+# El balanceo reduce las 16.820 imágenes aceptadas a 10.000. Se excluyen 190 imágenes al retirar dos identidades con menos de 100 muestras y otras 6.630 por el máximo por identidad. Esta última reducción afecta imágenes que superaron los filtros
+
+# %% [markdown]
 # ## Clustering exploratorio
 #
 # Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre el **subset balanceado**: 100 imágenes aceptadas por identidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
