@@ -346,21 +346,23 @@ extremes = pl.concat(
     ]
 )
 
-fig, axes = plt.subplots(4, 3, figsize=(16, 12))
+fig, axes = plt.subplots(4, 3, figsize=(8, 10), layout="constrained")
+fig.get_layout_engine().set(w_pad=0.02, h_pad=0.04, wspace=0.02, hspace=0.02)
+
 for ax, row in zip(axes.flat, extremes.iter_rows(named=True)):
     with Image.open(DATA_DIR / row["path"]) as img:
         ax.imshow(img.convert("RGB"))
     ax.set_title(
-        f"{row['case']}\n{row['identity']}\nb={row['brightness']}, c={row['contrast']}",
+        f"{row['case']} · {row['identity']}\n"
+        f"b={row['brightness']:.0f}, c={row['contrast']:.0f}",
         fontsize=8,
     )
     ax.axis("off")
 
-for ax in axes.flat[len(extremes) :]:
+for ax in axes.flat[len(extremes):]:
     ax.axis("off")
 
 fig.suptitle("Casos extremos de iluminación y contraste", fontsize=12)
-plt.tight_layout()
 plt.show()
 
 # %% [markdown]
