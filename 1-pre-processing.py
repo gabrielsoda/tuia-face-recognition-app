@@ -995,13 +995,49 @@ from sklearn.metrics import (
     silhouette_score,
 )
 
-# Cargamos ArcFace (reconocimiento + detección ya está en buffalo_l)
+# True: deteccion y embeddings en GPU. False: ejecucion original en CPU.
+# t-SNE, K-Means y las metricas siguen en CPU en ambos casos.
+USE_GPU = False
+
+providers = ["CPUExecutionProvider"]
+if USE_GPU:
+    import os
+    import sysconfig
+
+    import onnxruntime as ort
+
+    # En Windows, CUDA/cuDNN necesitan encontrar las DLL instaladas en la venv.
+    nvidia_dir = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
+    dll_dirs = sorted({str(path.parent) for path in nvidia_dir.rglob("*.dll")})
+    if os.name == "nt" and dll_dirs:
+        os.environ["PATH"] = (
+            os.pathsep.join(dll_dirs) + os.pathsep + os.environ.get("PATH", "")
+        )
+    ort.preload_dlls(directory="")
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        raise RuntimeError(
+            "CUDA no disponible: revisar onnxruntime-gpu o usar USE_GPU = False."
+        )
+    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+# Cargamos los mismos modelos de buffalo_l que en la version original.
 face_analysis = FaceAnalysis(
-    name="buffalo_l",
-    providers=["CPUExecutionProvider"],
+    name="buffalo_l", providers=providers, allowed_modules=["detection", "recognition"]
 )
 face_analysis.prepare(
-    ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE
+    ctx_id=0 if USE_GPU else -1,
+    det_thresh=DETECTION_THRESHOLD,
+    det_size=DETECTION_SIZE,
+)
+if USE_GPU:
+    for model in face_analysis.models.values():
+        if "CUDAExecutionProvider" not in model.session.get_providers():
+            raise RuntimeError(
+                "Un modelo no pudo habilitar CUDA. Revisar los mensajes anteriores."
+            )
+        model.session.disable_fallback()
+print(
+    "Dispositivo solicitado para deteccion y embeddings:", "GPU" if USE_GPU else "CPU"
 )
 
 # Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
