@@ -1424,7 +1424,11 @@ display(scatter)
 # | ~~MotionBlur~~ | — | Redundante con GaussianBlur. |
 
 # %%
+import hashlib
+
 import albumentations as A
+
+AUGMENTATION_SEED = 42
 
 augmentation_pipeline = A.Compose(
     [
@@ -1433,12 +1437,15 @@ augmentation_pipeline = A.Compose(
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
         A.GaussianBlur(blur_limit=(3, 5), p=0.3),
         A.GaussNoise(std_range=(5 / 255, 15 / 255), p=0.3),
-    ]
+    ],
+    seed=AUGMENTATION_SEED,
 )
 
 
 # Visualización rápida antes de generar
 def show_augmentations(image_path, n=8):
+    # Cada llamada muestra la misma secuencia de variantes.
+    augmentation_pipeline.set_random_seed(AUGMENTATION_SEED)
     img = cv2.imread(str(image_path))
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     fig, axes = plt.subplots(1, n + 1, figsize=(3 * (n + 1), 3))
@@ -1637,6 +1644,11 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
         # Offline augmentation: solo para train, 1 aumentada por original
         if split_name == "train":
             aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
+            # Semilla estable por ruta relativa, independiente del orden y de la grilla.
+            image_path = row["path"].replace("\\", "/")
+            image_key = f"{AUGMENTATION_SEED}:{image_path}"
+            image_seed = int(hashlib.sha256(image_key.encode()).hexdigest()[:8], 16)
+            augmentation_pipeline.set_random_seed(image_seed)
             aug_rgb = augmentation_pipeline(image=aligned_rgb)["image"]
             aug_bgr = cv2.cvtColor(aug_rgb, cv2.COLOR_RGB2BGR)
             aug_fname = f"{Path(row['path']).stem}_aug.png"
