@@ -1226,66 +1226,100 @@ from sklearn.metrics import (
 # t-SNE, K-Means y las metricas siguen en CPU en ambos casos.
 USE_GPU = False
 
-providers = ["CPUExecutionProvider"]
-if USE_GPU:
-    import os
-    import sysconfig
+# True: recalcular aunque exista cache. Usarlo si cambian fotos o pesos del modelo.
+FORCE_RECOMPUTE_EMBEDDINGS = False
 
-    import onnxruntime as ort
+# Un archivo por dispositivo, resolucion y umbral. No se sube a Git.
+cache_dir = Path("output/cache_embeddings")
+cache_dir.mkdir(parents=True, exist_ok=True)
+device = "gpu" if USE_GPU else "cpu"
+width, height = DETECTION_SIZE
+cache_path = cache_dir / f"arcface_{device}_{width}x{height}_t{DETECTION_THRESHOLD}.parquet"
 
-    # En Windows, CUDA/cuDNN necesitan encontrar las DLL instaladas en la venv.
-    nvidia_dir = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
-    dll_dirs = sorted({str(path.parent) for path in nvidia_dir.rglob("*.dll")})
-    if os.name == "nt" and dll_dirs:
-        os.environ["PATH"] = (
-            os.pathsep.join(dll_dirs) + os.pathsep + os.environ.get("PATH", "")
-        )
-    ort.preload_dlls(directory="")
-    if "CUDAExecutionProvider" not in ort.get_available_providers():
-        raise RuntimeError(
-            "CUDA no disponible: revisar onnxruntime-gpu o usar USE_GPU = False."
-        )
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+# Solo reutilizamos embeddings si coinciden las rutas, identidades y su orden.
+cached_embeddings = None
+if cache_path.exists() and not FORCE_RECOMPUTE_EMBEDDINGS:
+    cached_embeddings = pl.read_parquet(cache_path)
+    if not cached_embeddings.select("path", "identity").equals(
+        balanced.select("path", "identity")
+    ):
+        print("Cambio la seleccion de imagenes: se recalcularan los embeddings.")
+        cached_embeddings = None
 
-# Cargamos los mismos modelos de buffalo_l que en la version original.
-face_analysis = FaceAnalysis(
-    name="buffalo_l", providers=providers, allowed_modules=["detection", "recognition"]
-)
-face_analysis.prepare(
-    ctx_id=0 if USE_GPU else -1,
-    det_thresh=DETECTION_THRESHOLD,
-    det_size=DETECTION_SIZE,
-)
-if USE_GPU:
-    for model in face_analysis.models.values():
-        if "CUDAExecutionProvider" not in model.session.get_providers():
-            raise RuntimeError(
-                "Un modelo no pudo habilitar CUDA. Revisar los mensajes anteriores."
+if cached_embeddings is not None:
+    embeddings_df = cached_embeddings
+    print("Cache reutilizada, sin ejecutar modelos:", cache_path)
+else:
+    providers = ["CPUExecutionProvider"]
+    if USE_GPU:
+        import os
+        import sysconfig
+
+        import onnxruntime as ort
+
+        # En Windows, CUDA/cuDNN necesitan encontrar las DLL instaladas en la venv.
+        nvidia_dir = Path(sysconfig.get_paths()["purelib"]) / "nvidia"
+        dll_dirs = sorted({str(path.parent) for path in nvidia_dir.rglob("*.dll")})
+        if os.name == "nt" and dll_dirs:
+            os.environ["PATH"] = (
+                os.pathsep.join(dll_dirs) + os.pathsep + os.environ.get("PATH", "")
             )
-        model.session.disable_fallback()
-print(
-    "Dispositivo solicitado para deteccion y embeddings:", "GPU" if USE_GPU else "CPU"
-)
+        ort.preload_dlls(directory="")
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            raise RuntimeError(
+                "CUDA no disponible: revisar onnxruntime-gpu o usar USE_GPU = False."
+            )
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
-# Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
-# Si hay varias detecciones usamos el rostro principal.
-embedding_records = []
-for row in balanced.iter_rows(named=True):
-    image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
-    if image_bgr is None:
-        continue
-    faces = face_analysis.get(image_bgr)
-    if faces:
-        face = max(faces, key=lambda detected_face: float(detected_face.det_score))
-        embedding_records.append(
-            {
-                "path": row["path"],
-                "identity": row["identity"],
-                "embedding": face.embedding,
-            }
-        )
+    # Cargamos los mismos modelos de buffalo_l que en la version original.
+    face_analysis = FaceAnalysis(
+        name="buffalo_l", providers=providers, allowed_modules=["detection", "recognition"]
+    )
+    face_analysis.prepare(
+        ctx_id=0 if USE_GPU else -1,
+        det_thresh=DETECTION_THRESHOLD,
+        det_size=DETECTION_SIZE,
+    )
+    if USE_GPU:
+        for model in face_analysis.models.values():
+            if "CUDAExecutionProvider" not in model.session.get_providers():
+                raise RuntimeError(
+                    "Un modelo no pudo habilitar CUDA. Revisar los mensajes anteriores."
+                )
+            model.session.disable_fallback()
+    print(
+        "Dispositivo solicitado para deteccion y embeddings:", "GPU" if USE_GPU else "CPU"
+    )
 
-embeddings_df = pl.from_dicts(embedding_records)
+    # Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
+    # Si hay varias detecciones usamos el rostro principal.
+    embedding_records = []
+    for row in balanced.iter_rows(named=True):
+        image_bgr = cv2.imread(str(DATA_DIR / row["path"]))
+        if image_bgr is None:
+            continue
+        faces = face_analysis.get(image_bgr)
+        if faces:
+            face = max(faces, key=lambda detected_face: float(detected_face.det_score))
+            embedding_records.append(
+                {
+                    "path": row["path"],
+                    "identity": row["identity"],
+                    "embedding": face.embedding,
+                }
+            )
+
+    if not embedding_records:
+        raise ValueError("No se pudieron extraer embeddings.")
+    embeddings_df = pl.from_dicts(embedding_records)
+
+    # Guardar al terminar. El reemplazo evita reutilizar una escritura interrumpida.
+    temporary_cache = cache_path.with_suffix(".tmp")
+    embeddings_df.write_parquet(temporary_cache)
+    temporary_cache.replace(cache_path)
+    print("Cache guardada:", cache_path)
+    print("Imagenes omitidas:", balanced.height - embeddings_df.height)
+
 X = np.vstack(embeddings_df["embedding"].to_list())
 y = embeddings_df["identity"].to_list()
 print(
@@ -1390,7 +1424,11 @@ display(scatter)
 # | ~~MotionBlur~~ | — | Redundante con GaussianBlur. |
 
 # %%
+import hashlib
+
 import albumentations as A
+
+AUGMENTATION_SEED = 42
 
 augmentation_pipeline = A.Compose(
     [
@@ -1398,13 +1436,16 @@ augmentation_pipeline = A.Compose(
         A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.6),
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
         A.GaussianBlur(blur_limit=(3, 5), p=0.3),
-        A.GaussNoise(var_limit=(5.0, 15.0), p=0.3),
-    ]
+        A.GaussNoise(std_range=(5 / 255, 15 / 255), p=0.3),
+    ],
+    seed=AUGMENTATION_SEED,
 )
 
 
 # Visualización rápida antes de generar
 def show_augmentations(image_path, n=8):
+    # Cada llamada muestra la misma secuencia de variantes.
+    augmentation_pipeline.set_random_seed(AUGMENTATION_SEED)
     img = cv2.imread(str(image_path))
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     fig, axes = plt.subplots(1, n + 1, figsize=(3 * (n + 1), 3))
@@ -1412,7 +1453,7 @@ def show_augmentations(image_path, n=8):
     axes[0].set_title("Original")
     axes[0].axis("off")
     for i in range(n):
-        aug = augmentation_pipeline(image=img)["image"]
+        aug = augmentation_pipeline(image=img_rgb)["image"]
         axes[i + 1].imshow(aug)
         axes[i + 1].set_title(f"Aug {i + 1}")
         axes[i + 1].axis("off")
@@ -1571,12 +1612,12 @@ else:
     detector_aligned = detector  # type: ignore[name-defined]
 
 aligned_stats = []
-aug_records = []  # filas a agregar en train.csv
 
 for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test_df)]:
     out_split = ALIGNED_DIR / split_name
     out_split.mkdir(exist_ok=True)
     saved = skipped = 0
+    split_records = []
 
     for idx, row in enumerate(split_df.iter_rows(named=True), start=1):
         img_bgr = cv2.imread(str(DATA_DIR / row["path"]))
@@ -1597,25 +1638,51 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
         out_identity = out_split / row["identity"]
         out_identity.mkdir(parents=True, exist_ok=True)
         fname = f"{Path(row['path']).stem}.png"
-        cv2.imwrite(str(out_identity / fname), aligned_bgr)
+        output_path = out_identity / fname
+
+        if not cv2.imwrite(str(output_path), aligned_bgr):
+            raise RuntimeError(f"No se pudo guardar {output_path}")
+
+        split_records.append({
+            "path": output_path.relative_to(ALIGNED_DIR).as_posix(),
+            "identity": row["identity"],
+        })
         saved += 1
 
         # Offline augmentation: solo para train, 1 aumentada por original
         if split_name == "train":
             aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
+            # Semilla estable por ruta relativa, independiente del orden y de la grilla.
+            image_path = row["path"].replace("\\", "/")
+            image_key = f"{AUGMENTATION_SEED}:{image_path}"
+            image_seed = int(hashlib.sha256(image_key.encode()).hexdigest()[:8], 16)
+            augmentation_pipeline.set_random_seed(image_seed)
             aug_rgb = augmentation_pipeline(image=aligned_rgb)["image"]
             aug_bgr = cv2.cvtColor(aug_rgb, cv2.COLOR_RGB2BGR)
             aug_fname = f"{Path(row['path']).stem}_aug.png"
-            cv2.imwrite(str(out_identity / aug_fname), aug_bgr)
-            aug_records.append(
-                {
-                    "path": str(Path(row["path"]).parent / aug_fname),
-                    "identity": row["identity"],
-                }
-            )
+            aug_path = out_identity / aug_fname
+
+            if not cv2.imwrite(str(aug_path), aug_bgr):
+                raise RuntimeError(f"No se pudo guardar {aug_path}")
+
+            split_records.append({
+                "path": aug_path.relative_to(ALIGNED_DIR).as_posix(),
+                "identity": row["identity"],
+            })
 
         if idx % 500 == 0 or idx == split_df.height:
             print(f"  [{split_name:5s}] {idx:4d}/{split_df.height} guardadas")
+    split_manifest = pl.DataFrame(
+        split_records,
+        schema={"path": pl.String, "identity": pl.String},
+    )
+
+    assert split_manifest["path"].n_unique() == split_manifest.height, (
+        "Hay rutas duplicadas"
+    )
+
+    split_manifest.write_csv(OUTPUT_DIR / f"{split_name}.csv")
+    print(f"CSV de {split_name}: {split_manifest.height} archivos")
 
     aligned_stats.append(
         {"split": split_name, "guardadas": saved, "omitidas": skipped}
@@ -1623,20 +1690,6 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
     print(
         f"→ {split_name}: {saved} imágenes guardadas, {skipped} omitidas "
         f"en {ALIGNED_DIR / split_name}"
-    )
-
-# Actualizamos train.csv para incluir las imágenes aumentadas
-if aug_records:
-    train_existing = pl.read_csv(OUTPUT_DIR / "train.csv")
-    train_aug = pl.from_dicts(aug_records)
-    train_combined = pl.concat([train_existing, train_aug])
-    train_combined.write_csv(OUTPUT_DIR / "train.csv")
-    aligned_stats.append(
-        {"split": "train_aug", "guardadas": len(aug_records), "omitidas": 0}
-    )
-    print(
-        f"\nTrain ampliado: {train_combined.height} filas "
-        f"({len(aug_records)} aumentadas) → {OUTPUT_DIR / 'train.csv'}"
     )
 
 display(pl.from_dicts(aligned_stats))
