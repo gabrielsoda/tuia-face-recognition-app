@@ -359,7 +359,7 @@ for ax, row in zip(axes.flat, extremes.iter_rows(named=True)):
     )
     ax.axis("off")
 
-for ax in axes.flat[len(extremes):]:
+for ax in axes.flat[len(extremes) :]:
     ax.axis("off")
 
 fig.suptitle("Casos extremos de iluminación y contraste", fontsize=12)
@@ -462,7 +462,7 @@ plt.tight_layout()
 plt.show()
 
 # %% [markdown]
-# Preguntas abiertas luego de esta exploración de imagenes pequeñas:
+# Preguntas abiertas luego de esta exploración de imágenes pequeñas:
 #
 # - El detector encuentra estas caras? comprobar graficando boxes, scores y landmarks.
 # - ayudan a entrenar el reconocedor? implica comparar entrenamientos -> ablación, quitar un componente y observar qué cambia.
@@ -470,7 +470,7 @@ plt.show()
 # %% [markdown]
 # ## Calibración del umbral de detección
 #
-# Prueba sobre un subsample del ~25% de las imagenes (4225 imágenes) para determinar el umbral de detección que mejor clasifica las imágenes en 0, 1 o 2+ rostros detectados. Se inspeccionan visualmente los falsos positivos y negativos para ajustar el umbral.
+# Prueba sobre un subsample del ~25% de las imágenes (4225 imágenes) para determinar el umbral de detección que mejor clasifica las imágenes en 0, 1 o 2+ rostros detectados. Se inspeccionan visualmente los falsos positivos y negativos para ajustar el umbral.
 
 # %%
 SUBSAMPLE_SIZE = 4225
@@ -923,9 +923,235 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ## Revisión manual de imágenes con varios rostros
+#
+# Tras los filtros automáticos, inspeccionamos todas las imágenes con varias detecciones, antes de construir el conjunto balanceado. El score mide confianza de deteccion, no identidad: la cara de mayor score puede no corresponder a la persona de la carpeta.
+#
+# Primero mostramos los casos y sus recortes. Luego documentamos las selecciones incorrectas y excluimos esas rutas del conjunto aceptado. No modificamos los archivos originales. Verde: rostro elegido por score. Naranja: otras detecciones. Los recortes mostrados son cajas, no la alineacion final de ArcFace.
+
+# %%
+# 1. Casos con varias detecciones, antes del balanceo.
+audit_candidates = (
+    detections.filter(pl.col("face_count") > 1)
+    .sort(["identity", "path"])
+)
+print("Imágenes con varias caras:", audit_candidates.height)
+print("Aceptadas por filtros automaticos:", audit_candidates.filter(
+    pl.col("quality_rule").str.starts_with("Aceptada")
+).height)
+display(audit_candidates.select(
+    "identity", "path", "face_count", "quality_rule"
+))
+
+# %%
+# 2. Recuperar todas las cajas SOLO para los pocos casos anteriores.
+# Reutilizamos el detector del pipeline completo (mismo umbral y resolucion).
+# No usamos detection_cache: esa lista solo cubre la muestra de calibracion.
+multi_face_audit = []
+audit_failures = []
+for row in audit_candidates.iter_rows(named=True):
+    image = cv2.imread(str(DATA_DIR / row["path"]))
+    if image is None:
+        audit_failures.append({"path": row["path"], "motivo": "No se pudo leer"})
+        continue
+    faces = sorted(detector.get(image), key=lambda f: float(f.det_score), reverse=True)
+    if len(faces) < 2:
+        audit_failures.append({"path": row["path"], "motivo": "Ahora hay menos de 2 detecciones"})
+        continue
+    boxes = [np.asarray(face.bbox, dtype=float) for face in faces]
+    areas = [max(0, b[2] - b[0]) * max(0, b[3] - b[1]) for b in boxes]
+    multi_face_audit.append({
+        **row,
+        "faces": faces,
+        "score_1": float(faces[0].det_score),
+        "score_2": float(faces[1].det_score),
+        "diferencia_score": float(faces[0].det_score - faces[1].det_score),
+        "elegida_es_mayor": bool(areas[0] == max(areas)),
+    })
+
+if multi_face_audit:
+    audit_table = pl.from_dicts([
+        {key: value for key, value in item.items() if key != "faces"}
+        for item in multi_face_audit
+    ]).with_row_index("caso")
+    display(audit_table.select(
+        "caso", "identity", "path", "score_1", "score_2",
+        "diferencia_score", "elegida_es_mayor"
+    ))
+    print("Efecto hipotetico del margen 0.1; NO se aplica ningun descarte:")
+    display(audit_table.select(
+        pl.len().alias("casos"),
+        (pl.col("diferencia_score") <= 0.1).sum().alias("descartaria_margen_01"),
+        (~pl.col("elegida_es_mayor")).sum().alias("elegida_no_es_la_mayor"),
+    ))
+else:
+    print("No hay casos multiples para inspeccionar.")
+if audit_failures:
+    display(pl.from_dicts(audit_failures))
+
+# %%
+# 3. Recorrer TODOS los casos en paginas estables.
+# Para buscar el ejemplo puntual: AUDIT_IDENTITY = "Robert De Niro".
+AUDIT_IDENTITY = ""
+AUDIT_PAGE = 0
+AUDIT_PAGE_SIZE = 4
+
+audit_view = [
+    (index, item) for index, item in enumerate(multi_face_audit)
+    if AUDIT_IDENTITY.lower() in item["identity"].lower()
+]
+audit_pages = (len(audit_view) + AUDIT_PAGE_SIZE - 1) // AUDIT_PAGE_SIZE
+print(f"Casos: {len(audit_view)}. Paginas: {audit_pages}; numeradas desde 0.")
+audit_page = audit_view[AUDIT_PAGE * AUDIT_PAGE_SIZE:(AUDIT_PAGE + 1) * AUDIT_PAGE_SIZE]
+
+if audit_page:
+    from matplotlib.patches import Rectangle
+
+    fig, axes = plt.subplots(len(audit_page), 3,
+                             figsize=(13, 4 * len(audit_page)), squeeze=False)
+    for row_axes, (index, item) in zip(axes, audit_page):
+        image = cv2.imread(str(DATA_DIR / item["path"]))
+        if image is None:
+            for ax in row_axes:
+                ax.axis("off")
+            print("No se pudo leer:", item["path"])
+            continue
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        row_axes[0].imshow(rgb)
+        for rank, face in enumerate(item["faces"]):
+            x1, y1, x2, y2 = face.bbox
+            color = "limegreen" if rank == 0 else "darkorange"
+            row_axes[0].add_patch(Rectangle(
+                (x1, y1), x2-x1, y2-y1, fill=False, edgecolor=color, linewidth=2
+            ))
+            row_axes[0].text(max(0, x1), max(0, y1),
+                             f"#{rank+1}: {face.det_score:.3f}", color="white",
+                             fontsize=8, bbox=dict(facecolor=color, alpha=0.8))
+        row_axes[0].set_xlim(-0.5, rgb.shape[1]-0.5)
+        row_axes[0].set_ylim(rgb.shape[0]-0.5, -0.5)
+        row_axes[0].set_title(
+            f"Caso {index}: {item['identity']}\n"
+            f"Diferencia: {item['diferencia_score']:.3f}", fontsize=9
+        )
+        for ax, face, title in zip(row_axes[1:], item["faces"][:2],
+                                   ["Elegida por score", "Segunda por score"]):
+            x1, y1, x2, y2 = face.bbox
+            x1, y1 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
+            x2, y2 = min(rgb.shape[1], int(np.ceil(x2))), min(rgb.shape[0], int(np.ceil(y2)))
+            if x2 > x1 and y2 > y1:
+                ax.imshow(rgb[y1:y2, x1:x2])
+            ax.set_title(f"{title}: {face.det_score:.3f}", fontsize=10)
+        for ax in row_axes:
+            ax.axis("off")
+        print(f"Caso {index}: {item['path']}")
+    plt.tight_layout()
+    plt.show()
+else:
+    print("No hay casos en esta pagina. Revisar filtros y numero de pagina.")
+
+# %% [markdown]
+# ### Resultado de la revision visual
+#
+# Se revisaron los 62 casos con varios rostros y se identificaron cuatro imágenes en las que la cara seleccionada no corresponde a la identidad de la carpeta. Las registramos por ruta, porque los numeros de caso pueden cambiar al reordenar la auditoria.
+#
+# La siguiente grilla muestra esos errores. Despues los excluimos del conjunto aceptado antes de balancear. Si una imagen ya fue descartada por un filtro automatico, la exclusion manual no vuelve a restarla.
+
+# %%
+# Rutas confirmadas durante la revision visual. Se conservan los originales.
+EXCLUDED_IMAGES = [
+    r"pins_Morgan Freeman\Morgan Freeman80_3131.jpg",
+    r"pins_Robert De Niro\Robert De Niro163_700.jpg",
+    r"pins_Chris Evans\Chris Evans94_1272.jpg",
+    r"pins_Jimmy Fallon\Jimmy Fallon143_2779.jpg",
+]
+
+# Derivar los indices actuales de las rutas revisadas, no al reves.
+audit_excluded_paths = {path.replace("\\", "/") for path in EXCLUDED_IMAGES}
+AUDIT_WRONG_CASES = [
+    index for index, item in enumerate(multi_face_audit)
+    if item["path"].replace("\\", "/") in audit_excluded_paths
+]
+wrong_items = [
+    {
+        "path": multi_face_audit[index]["path"],
+        "faces": [
+            {
+                "score": float(face.det_score),
+                "bbox": np.asarray(face.bbox).tolist(),
+                "keypoints": np.asarray(face.kps).tolist() if face.kps is not None else None,
+            }
+            for face in multi_face_audit[index]["faces"]
+        ],
+    }
+    for index in AUDIT_WRONG_CASES
+]
+print("Selecciones incorrectas encontradas en la auditoria:", len(wrong_items))
+for index in AUDIT_WRONG_CASES:
+    print(f"Caso {index}: {multi_face_audit[index]['path']}")
+
+
+# %%
+fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+
+for ax, case, item in zip(axes.flat, AUDIT_WRONG_CASES, wrong_items):
+    img = cv2.imread(str(DATA_DIR / item["path"]))
+    ax.axis("off")
+
+    if img is None:
+        ax.set_title(f"Caso {case}: no se pudo leer")
+        continue
+
+    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    for rank, face in enumerate(item["faces"]):
+        color = "limegreen" if rank == 0 else "darkorange"
+        x1, y1, x2, y2 = face["bbox"]
+
+        ax.add_patch(Rectangle(
+            (x1, y1), x2 - x1, y2 - y1,
+            fill=False, edgecolor=color, linewidth=2,
+        ))
+        ax.text(
+            max(0, x1), max(0, y1),
+            f"#{rank + 1}: {face['score']:.3f}",
+            color="white", fontsize=9,
+            bbox=dict(facecolor=color, alpha=0.8),
+        )
+
+        if face["keypoints"] is not None:
+            points = np.asarray(face["keypoints"])
+            ax.scatter(points[:, 0], points[:, 1], c=color, s=12)
+
+    ax.set_xlim(-0.5, img.shape[1] - 0.5)
+    ax.set_ylim(img.shape[0] - 0.5, -0.5)
+    identity = multi_face_audit[case]["identity"]
+    ax.set_title(f"Caso {case}: {identity}")
+
+fig.suptitle(
+    "Selecciones incorrectas\nVerde: rostro elegido · Naranja: otros rostros",
+    fontsize=14,
+)
+plt.tight_layout()
+plt.show()
+
+# %%
+# Excluir antes de balancear; partir de los filtros automaticos en cada ejecucion.
+accepted_before_manual_review = detections.filter(
+    pl.col("quality_rule").str.starts_with("Aceptada")
+)
+accepted = accepted_before_manual_review.filter(
+    ~pl.col("path").str.replace_all("\\", "/", literal=True).is_in(list(audit_excluded_paths))
+)
+print("Aceptadas por filtros automaticos:", accepted_before_manual_review.height)
+print("Excluidas adicionalmente por revision manual:",
+      accepted_before_manual_review.height - accepted.height)
+print("Aceptadas despues de revision manual:", accepted.height)
+
+
+# %% [markdown]
 # ## Subset balanceado
 #
-# Partimos de las imágenes que pasaron todas las reglas de calidad. Para entrenar la CNN custom necesitamos clases balanceadas: muestreamos **exactamente 100 imágenes por identidad** (`MIN = MAX`). El muestreo aleatorio simple preserva proporcionalmente las condiciones difíciles porque nunca filtramos por calidad fotométrica.
+# Partimos de las imágenes que pasaron los filtros automaticos y la revision manual. Como referencia inicial, conservamos identidades con al menos 100 imágenes aceptadas y muestreamos **exactamente 100 imágenes por identidad** (`MIN = MAX`). El muestreo es aleatorio con semilla fija preserva proporcionalmente las condiciones difíciles porque nunca filtramos por calidad fotométrica.
 
 # %%
 MIN_PER_ID = 100
@@ -979,7 +1205,8 @@ print(
 )
 
 # %% [markdown]
-# El balanceo reduce las 16.820 imágenes aceptadas a 10.000. Se excluyen 190 imágenes al retirar dos identidades con menos de 100 muestras y otras 6.630 por el máximo por identidad. Esta última reducción afecta imágenes que superaron los filtros
+# Los filtros automáticos dejaron 16.820 imágenes aceptadas. Después de revisar visualmente las imágenes con mútiples rostros, se registraron cuatro selecciones incorrectas. dos ya estaban descartadas por los filtros automáticos y otras dos se excluyeron manualmente, dejando 16.818 imágenes aceptadas.
+# El balanceo reduce esas 16.818 imágenes a 10.000. Se excluyen 190 imágenes al retirar dos identidades con menos de 100 muestras y otras 6.628 por el máximo de 100 imágenes por identidad. Esta última reducción afecta imágenes que superaron tanto los filtros automáticos como la revisión manual.
 
 # %% [markdown]
 # ## Clustering exploratorio
