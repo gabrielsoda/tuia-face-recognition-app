@@ -29,12 +29,12 @@ from pathlib import Path
 import altair as alt
 import cv2
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 import numpy as np
 import polars as pl
 from insightface.app import FaceAnalysis
 from insightface.utils import face_align
 from IPython.display import display
+from matplotlib.patches import Rectangle
 from PIL import Image, UnidentifiedImageError
 
 alt.data_transformers.disable_max_rows()
@@ -549,6 +549,7 @@ display(tune_df)
 # Ejecutamos el detector con umbral 0,1 y guardamos las detecciones que devuelve.
 # Sobreeso, probamos umbrales más exigentes como 0,3 o 0,6, sin ejecutar nuevamente la red.
 
+
 # %%
 def show_threshold_samples(
     threshold: float,
@@ -931,17 +932,15 @@ plt.show()
 
 # %%
 # 1. Casos con varias detecciones, antes del balanceo.
-audit_candidates = (
-    detections.filter(pl.col("face_count") > 1)
-    .sort(["identity", "path"])
+audit_candidates = detections.filter(pl.col("face_count") > 1).sort(
+    ["identity", "path"]
 )
 print("Imágenes con varias caras:", audit_candidates.height)
-print("Aceptadas por filtros automaticos:", audit_candidates.filter(
-    pl.col("quality_rule").str.starts_with("Aceptada")
-).height)
-display(audit_candidates.select(
-    "identity", "path", "face_count", "quality_rule"
-))
+print(
+    "Aceptadas por filtros automaticos:",
+    audit_candidates.filter(pl.col("quality_rule").str.starts_with("Aceptada")).height,
+)
+display(audit_candidates.select("identity", "path", "face_count", "quality_rule"))
 
 # %%
 # 2. Recuperar todas las cajas SOLO para los pocos casos anteriores.
@@ -956,34 +955,49 @@ for row in audit_candidates.iter_rows(named=True):
         continue
     faces = sorted(detector.get(image), key=lambda f: float(f.det_score), reverse=True)
     if len(faces) < 2:
-        audit_failures.append({"path": row["path"], "motivo": "Ahora hay menos de 2 detecciones"})
+        audit_failures.append(
+            {"path": row["path"], "motivo": "Ahora hay menos de 2 detecciones"}
+        )
         continue
     boxes = [np.asarray(face.bbox, dtype=float) for face in faces]
     areas = [max(0, b[2] - b[0]) * max(0, b[3] - b[1]) for b in boxes]
-    multi_face_audit.append({
-        **row,
-        "faces": faces,
-        "score_1": float(faces[0].det_score),
-        "score_2": float(faces[1].det_score),
-        "diferencia_score": float(faces[0].det_score - faces[1].det_score),
-        "elegida_es_mayor": bool(areas[0] == max(areas)),
-    })
+    multi_face_audit.append(
+        {
+            **row,
+            "faces": faces,
+            "score_1": float(faces[0].det_score),
+            "score_2": float(faces[1].det_score),
+            "diferencia_score": float(faces[0].det_score - faces[1].det_score),
+            "elegida_es_mayor": bool(areas[0] == max(areas)),
+        }
+    )
 
 if multi_face_audit:
-    audit_table = pl.from_dicts([
-        {key: value for key, value in item.items() if key != "faces"}
-        for item in multi_face_audit
-    ]).with_row_index("caso")
-    display(audit_table.select(
-        "caso", "identity", "path", "score_1", "score_2",
-        "diferencia_score", "elegida_es_mayor"
-    ))
+    audit_table = pl.from_dicts(
+        [
+            {key: value for key, value in item.items() if key != "faces"}
+            for item in multi_face_audit
+        ]
+    ).with_row_index("caso")
+    display(
+        audit_table.select(
+            "caso",
+            "identity",
+            "path",
+            "score_1",
+            "score_2",
+            "diferencia_score",
+            "elegida_es_mayor",
+        )
+    )
     print("Efecto hipotetico del margen 0.1; NO se aplica ningun descarte:")
-    display(audit_table.select(
-        pl.len().alias("casos"),
-        (pl.col("diferencia_score") <= 0.1).sum().alias("descartaria_margen_01"),
-        (~pl.col("elegida_es_mayor")).sum().alias("elegida_no_es_la_mayor"),
-    ))
+    display(
+        audit_table.select(
+            pl.len().alias("casos"),
+            (pl.col("diferencia_score") <= 0.1).sum().alias("descartaria_margen_01"),
+            (~pl.col("elegida_es_mayor")).sum().alias("elegida_no_es_la_mayor"),
+        )
+    )
 else:
     print("No hay casos multiples para inspeccionar.")
 if audit_failures:
@@ -997,18 +1011,22 @@ AUDIT_PAGE = 0
 AUDIT_PAGE_SIZE = 4
 
 audit_view = [
-    (index, item) for index, item in enumerate(multi_face_audit)
+    (index, item)
+    for index, item in enumerate(multi_face_audit)
     if AUDIT_IDENTITY.lower() in item["identity"].lower()
 ]
 audit_pages = (len(audit_view) + AUDIT_PAGE_SIZE - 1) // AUDIT_PAGE_SIZE
 print(f"Casos: {len(audit_view)}. Paginas: {audit_pages}; numeradas desde 0.")
-audit_page = audit_view[AUDIT_PAGE * AUDIT_PAGE_SIZE:(AUDIT_PAGE + 1) * AUDIT_PAGE_SIZE]
+audit_page = audit_view[
+    AUDIT_PAGE * AUDIT_PAGE_SIZE : (AUDIT_PAGE + 1) * AUDIT_PAGE_SIZE
+]
 
 if audit_page:
     from matplotlib.patches import Rectangle
 
-    fig, axes = plt.subplots(len(audit_page), 3,
-                             figsize=(13, 4 * len(audit_page)), squeeze=False)
+    fig, axes = plt.subplots(
+        len(audit_page), 3, figsize=(13, 4 * len(audit_page)), squeeze=False
+    )
     for row_axes, (index, item) in zip(axes, audit_page):
         image = cv2.imread(str(DATA_DIR / item["path"]))
         if image is None:
@@ -1021,23 +1039,35 @@ if audit_page:
         for rank, face in enumerate(item["faces"]):
             x1, y1, x2, y2 = face.bbox
             color = "limegreen" if rank == 0 else "darkorange"
-            row_axes[0].add_patch(Rectangle(
-                (x1, y1), x2-x1, y2-y1, fill=False, edgecolor=color, linewidth=2
-            ))
-            row_axes[0].text(max(0, x1), max(0, y1),
-                             f"#{rank+1}: {face.det_score:.3f}", color="white",
-                             fontsize=8, bbox=dict(facecolor=color, alpha=0.8))
-        row_axes[0].set_xlim(-0.5, rgb.shape[1]-0.5)
-        row_axes[0].set_ylim(rgb.shape[0]-0.5, -0.5)
+            row_axes[0].add_patch(
+                Rectangle(
+                    (x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor=color, linewidth=2
+                )
+            )
+            row_axes[0].text(
+                max(0, x1),
+                max(0, y1),
+                f"#{rank + 1}: {face.det_score:.3f}",
+                color="white",
+                fontsize=8,
+                bbox=dict(facecolor=color, alpha=0.8),
+            )
+        row_axes[0].set_xlim(-0.5, rgb.shape[1] - 0.5)
+        row_axes[0].set_ylim(rgb.shape[0] - 0.5, -0.5)
         row_axes[0].set_title(
             f"Caso {index}: {item['identity']}\n"
-            f"Diferencia: {item['diferencia_score']:.3f}", fontsize=9
+            f"Diferencia: {item['diferencia_score']:.3f}",
+            fontsize=9,
         )
-        for ax, face, title in zip(row_axes[1:], item["faces"][:2],
-                                   ["Elegida por score", "Segunda por score"]):
+        for ax, face, title in zip(
+            row_axes[1:], item["faces"][:2], ["Elegida por score", "Segunda por score"]
+        ):
             x1, y1, x2, y2 = face.bbox
             x1, y1 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
-            x2, y2 = min(rgb.shape[1], int(np.ceil(x2))), min(rgb.shape[0], int(np.ceil(y2)))
+            x2, y2 = (
+                min(rgb.shape[1], int(np.ceil(x2))),
+                min(rgb.shape[0], int(np.ceil(y2))),
+            )
             if x2 > x1 and y2 > y1:
                 ax.imshow(rgb[y1:y2, x1:x2])
             ax.set_title(f"{title}: {face.det_score:.3f}", fontsize=10)
@@ -1052,9 +1082,23 @@ else:
 # %% [markdown]
 # ### Resultado de la revision visual
 #
-# Se revisaron los 62 casos con varios rostros y se identificaron cuatro imágenes en las que la cara seleccionada no corresponde a la identidad de la carpeta. Las registramos por ruta, porque los numeros de caso pueden cambiar al reordenar la auditoria.
+# Se revisaron los 62 casos con varios rostros y se identificaron cuatro imágenes en las que la cara seleccionada no corresponde a la identidad etiquetada de la carpeta (la identidad principal). Las registramos por ruta por si hay cambios posteriores que modifiquen el orden del dataset.
 #
-# La siguiente grilla muestra esos errores. Despues los excluimos del conjunto aceptado antes de balancear. Si una imagen ya fue descartada por un filtro automatico, la exclusion manual no vuelve a restarla.
+# La siguiente visualización muestra esos casos con errores. Después los excluimos del conjunto aceptado antes de balancear. Si una imagen ya fue descartada por un filtro automático, la exclusion manual no vuelve a restarla.
+
+# %% [markdown]
+# En un paso posterior del desarrollo se detectó una imagen mal etiquetada del dataset. La identidad principal etiquetada era Johnny Depp, pero en la imagen se puede ver claramente que es Leonardo Di Caprio
+
+# %%
+image_path = Path("pins_Johnny Depp/Johnny Depp116_1780.jpg")
+identity = image_path.parent.name.removeprefix("pins_")
+image = cv2.imread(str(DATA_DIR / image_path))
+
+plt.figure(figsize=(3, 3))
+plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+plt.title(f"Etiqueta original: {identity}\nExcluida por etiquetado incorrecto")
+plt.axis("off")
+plt.show()
 
 # %%
 # Rutas confirmadas durante la revision visual. Se conservan los originales.
@@ -1063,12 +1107,14 @@ EXCLUDED_IMAGES = [
     r"pins_Robert De Niro\Robert De Niro163_700.jpg",
     r"pins_Chris Evans\Chris Evans94_1272.jpg",
     r"pins_Jimmy Fallon\Jimmy Fallon143_2779.jpg",
+    r"pins_Johnny Depp\Johnny Depp116_1780.jpg",
 ]
 
 # Derivar los indices actuales de las rutas revisadas, no al reves.
 audit_excluded_paths = {path.replace("\\", "/") for path in EXCLUDED_IMAGES}
 AUDIT_WRONG_CASES = [
-    index for index, item in enumerate(multi_face_audit)
+    index
+    for index, item in enumerate(multi_face_audit)
     if item["path"].replace("\\", "/") in audit_excluded_paths
 ]
 wrong_items = [
@@ -1078,7 +1124,9 @@ wrong_items = [
             {
                 "score": float(face.det_score),
                 "bbox": np.asarray(face.bbox).tolist(),
-                "keypoints": np.asarray(face.kps).tolist() if face.kps is not None else None,
+                "keypoints": np.asarray(face.kps).tolist()
+                if face.kps is not None
+                else None,
             }
             for face in multi_face_audit[index]["faces"]
         ],
@@ -1107,14 +1155,22 @@ for ax, case, item in zip(axes.flat, AUDIT_WRONG_CASES, wrong_items):
         color = "limegreen" if rank == 0 else "darkorange"
         x1, y1, x2, y2 = face["bbox"]
 
-        ax.add_patch(Rectangle(
-            (x1, y1), x2 - x1, y2 - y1,
-            fill=False, edgecolor=color, linewidth=2,
-        ))
+        ax.add_patch(
+            Rectangle(
+                (x1, y1),
+                x2 - x1,
+                y2 - y1,
+                fill=False,
+                edgecolor=color,
+                linewidth=2,
+            )
+        )
         ax.text(
-            max(0, x1), max(0, y1),
+            max(0, x1),
+            max(0, y1),
             f"#{rank + 1}: {face['score']:.3f}",
-            color="white", fontsize=9,
+            color="white",
+            fontsize=9,
             bbox=dict(facecolor=color, alpha=0.8),
         )
 
@@ -1140,11 +1196,15 @@ accepted_before_manual_review = detections.filter(
     pl.col("quality_rule").str.starts_with("Aceptada")
 )
 accepted = accepted_before_manual_review.filter(
-    ~pl.col("path").str.replace_all("\\", "/", literal=True).is_in(list(audit_excluded_paths))
+    ~pl.col("path")
+    .str.replace_all("\\", "/", literal=True)
+    .is_in(list(audit_excluded_paths))
 )
 print("Aceptadas por filtros automaticos:", accepted_before_manual_review.height)
-print("Excluidas adicionalmente por revision manual:",
-      accepted_before_manual_review.height - accepted.height)
+print(
+    "Excluidas adicionalmente por revision manual:",
+    accepted_before_manual_review.height - accepted.height,
+)
 print("Aceptadas despues de revision manual:", accepted.height)
 
 
@@ -1222,8 +1282,8 @@ from sklearn.metrics import (
     silhouette_score,
 )
 
-# True: deteccion y embeddings en GPU. False: ejecucion original en CPU.
-# t-SNE, K-Means y las metricas siguen en CPU en ambos casos.
+# True: detección y embeddings en GPU. False: ejecución original en CPU.
+# t-SNE, K-Means y las métricas siguen en CPU en ambos casos.
 USE_GPU = False
 
 # True: recalcular aunque exista cache. Usarlo si cambian fotos o pesos del modelo.
@@ -1234,7 +1294,9 @@ cache_dir = Path("output/cache_embeddings")
 cache_dir.mkdir(parents=True, exist_ok=True)
 device = "gpu" if USE_GPU else "cpu"
 width, height = DETECTION_SIZE
-cache_path = cache_dir / f"arcface_{device}_{width}x{height}_t{DETECTION_THRESHOLD}.parquet"
+cache_path = (
+    cache_dir / f"arcface_{device}_{width}x{height}_t{DETECTION_THRESHOLD}.parquet"
+)
 
 # Solo reutilizamos embeddings si coinciden las rutas, identidades y su orden.
 cached_embeddings = None
@@ -1243,7 +1305,7 @@ if cache_path.exists() and not FORCE_RECOMPUTE_EMBEDDINGS:
     if not cached_embeddings.select("path", "identity").equals(
         balanced.select("path", "identity")
     ):
-        print("Cambio la seleccion de imagenes: se recalcularan los embeddings.")
+        print("Cambió la selección de imágenes: se recalcularan los embeddings.")
         cached_embeddings = None
 
 if cached_embeddings is not None:
@@ -1273,7 +1335,9 @@ else:
 
     # Cargamos los mismos modelos de buffalo_l que en la version original.
     face_analysis = FaceAnalysis(
-        name="buffalo_l", providers=providers, allowed_modules=["detection", "recognition"]
+        name="buffalo_l",
+        providers=providers,
+        allowed_modules=["detection", "recognition"],
     )
     face_analysis.prepare(
         ctx_id=0 if USE_GPU else -1,
@@ -1288,7 +1352,8 @@ else:
                 )
             model.session.disable_fallback()
     print(
-        "Dispositivo solicitado para deteccion y embeddings:", "GPU" if USE_GPU else "CPU"
+        "Dispositivo solicitado para detección y embeddings:",
+        "GPU" if USE_GPU else "CPU",
     )
 
     # Extraemos embeddings del subset balanceado: 100 imágenes por identidad.
@@ -1643,10 +1708,12 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
         if not cv2.imwrite(str(output_path), aligned_bgr):
             raise RuntimeError(f"No se pudo guardar {output_path}")
 
-        split_records.append({
-            "path": output_path.relative_to(ALIGNED_DIR).as_posix(),
-            "identity": row["identity"],
-        })
+        split_records.append(
+            {
+                "path": output_path.relative_to(ALIGNED_DIR).as_posix(),
+                "identity": row["identity"],
+            }
+        )
         saved += 1
 
         # Offline augmentation: solo para train, 1 aumentada por original
@@ -1665,10 +1732,12 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
             if not cv2.imwrite(str(aug_path), aug_bgr):
                 raise RuntimeError(f"No se pudo guardar {aug_path}")
 
-            split_records.append({
-                "path": aug_path.relative_to(ALIGNED_DIR).as_posix(),
-                "identity": row["identity"],
-            })
+            split_records.append(
+                {
+                    "path": aug_path.relative_to(ALIGNED_DIR).as_posix(),
+                    "identity": row["identity"],
+                }
+            )
 
         if idx % 500 == 0 or idx == split_df.height:
             print(f"  [{split_name:5s}] {idx:4d}/{split_df.height} guardadas")
@@ -1684,9 +1753,7 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
     split_manifest.write_csv(OUTPUT_DIR / f"{split_name}.csv")
     print(f"CSV de {split_name}: {split_manifest.height} archivos")
 
-    aligned_stats.append(
-        {"split": split_name, "guardadas": saved, "omitidas": skipped}
-    )
+    aligned_stats.append({"split": split_name, "guardadas": saved, "omitidas": skipped})
     print(
         f"→ {split_name}: {saved} imágenes guardadas, {skipped} omitidas "
         f"en {ALIGNED_DIR / split_name}"
