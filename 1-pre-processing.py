@@ -1612,12 +1612,12 @@ else:
     detector_aligned = detector  # type: ignore[name-defined]
 
 aligned_stats = []
-aug_records = []  # filas a agregar en train.csv
 
 for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test_df)]:
     out_split = ALIGNED_DIR / split_name
     out_split.mkdir(exist_ok=True)
     saved = skipped = 0
+    split_records = []
 
     for idx, row in enumerate(split_df.iter_rows(named=True), start=1):
         img_bgr = cv2.imread(str(DATA_DIR / row["path"]))
@@ -1638,7 +1638,15 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
         out_identity = out_split / row["identity"]
         out_identity.mkdir(parents=True, exist_ok=True)
         fname = f"{Path(row['path']).stem}.png"
-        cv2.imwrite(str(out_identity / fname), aligned_bgr)
+        output_path = out_identity / fname
+
+        if not cv2.imwrite(str(output_path), aligned_bgr):
+            raise RuntimeError(f"No se pudo guardar {output_path}")
+
+        split_records.append({
+            "path": output_path.relative_to(ALIGNED_DIR).as_posix(),
+            "identity": row["identity"],
+        })
         saved += 1
 
         # Offline augmentation: solo para train, 1 aumentada por original
@@ -1652,16 +1660,29 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
             aug_rgb = augmentation_pipeline(image=aligned_rgb)["image"]
             aug_bgr = cv2.cvtColor(aug_rgb, cv2.COLOR_RGB2BGR)
             aug_fname = f"{Path(row['path']).stem}_aug.png"
-            cv2.imwrite(str(out_identity / aug_fname), aug_bgr)
-            aug_records.append(
-                {
-                    "path": str(Path(row["path"]).parent / aug_fname),
-                    "identity": row["identity"],
-                }
-            )
+            aug_path = out_identity / aug_fname
+
+            if not cv2.imwrite(str(aug_path), aug_bgr):
+                raise RuntimeError(f"No se pudo guardar {aug_path}")
+
+            split_records.append({
+                "path": aug_path.relative_to(ALIGNED_DIR).as_posix(),
+                "identity": row["identity"],
+            })
 
         if idx % 500 == 0 or idx == split_df.height:
             print(f"  [{split_name:5s}] {idx:4d}/{split_df.height} guardadas")
+    split_manifest = pl.DataFrame(
+        split_records,
+        schema={"path": pl.String, "identity": pl.String},
+    )
+
+    assert split_manifest["path"].n_unique() == split_manifest.height, (
+        "Hay rutas duplicadas"
+    )
+
+    split_manifest.write_csv(OUTPUT_DIR / f"{split_name}.csv")
+    print(f"CSV de {split_name}: {split_manifest.height} archivos")
 
     aligned_stats.append(
         {"split": split_name, "guardadas": saved, "omitidas": skipped}
@@ -1669,20 +1690,6 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
     print(
         f"→ {split_name}: {saved} imágenes guardadas, {skipped} omitidas "
         f"en {ALIGNED_DIR / split_name}"
-    )
-
-# Actualizamos train.csv para incluir las imágenes aumentadas
-if aug_records:
-    train_existing = pl.read_csv(OUTPUT_DIR / "train.csv")
-    train_aug = pl.from_dicts(aug_records)
-    train_combined = pl.concat([train_existing, train_aug])
-    train_combined.write_csv(OUTPUT_DIR / "train.csv")
-    aligned_stats.append(
-        {"split": "train_aug", "guardadas": len(aug_records), "omitidas": 0}
-    )
-    print(
-        f"\nTrain ampliado: {train_combined.height} filas "
-        f"({len(aug_records)} aumentadas) → {OUTPUT_DIR / 'train.csv'}"
     )
 
 display(pl.from_dicts(aligned_stats))
