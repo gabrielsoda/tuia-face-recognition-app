@@ -1432,7 +1432,7 @@ augmentation_pipeline = A.Compose(
         A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.6),
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
         A.GaussianBlur(blur_limit=(3, 5), p=0.3),
-        A.GaussNoise(var_limit=(5.0, 15.0), p=0.3),
+        A.GaussNoise(std_range=(5 / 255, 15 / 255), p=0.3),
     ]
 )
 
@@ -1446,7 +1446,7 @@ def show_augmentations(image_path, n=8):
     axes[0].set_title("Original")
     axes[0].axis("off")
     for i in range(n):
-        aug = augmentation_pipeline(image=img)["image"]
+        aug = augmentation_pipeline(image=img_rgb)["image"]
         axes[i + 1].imshow(aug)
         axes[i + 1].set_title(f"Aug {i + 1}")
         axes[i + 1].axis("off")
