@@ -1097,41 +1097,45 @@ display(scatter)
 # - Outliers (puntos lejos de su grupo) pueden ser errores de etiquetado o imágenes de muy baja calidad.
 
 # %% [markdown]
-# ## Data augmentation
+# ## Data augmentation (offline)
 #
-# Definimos un pipeline con `albumentations` acorde al dominio facial. Incluimos transformaciones que ocurren en el mundo real y **excluimos** las que destruyen la identidad (flip vertical, rotaciones de 90°).
+# Generamos **una sola imagen aumentada por cada original del split de entrenamiento**.
+# Las aumentadas se almacenan en disco junto a las originales, de modo que la
+# notebook 2 recibe el set de entrenamiento ya expandido, sin necesidad de
+# transformaciones on-the-fly.
+#
+# **Diseño del pipeline:**
+# - Eliminamos transformaciones que empeoran la identidad o introducen artefactos
+#   innecesarios en un dataset de baja calidad (Pins ya es web).
+# - Movimos las probabilidades hacia arriba (p = 0.5–0.7) para garantizar que cada
+#   muestra aumentada sea *consistentemente distinta* sin volverse irreconocible.
+#
+# | Transformación | Prob. | ¿Qué evitamos? |
+# |---|---|---|
+# | HorizontalFlip | 0.5 | Simetría facial; no destruye identidad. |
+# | ShiftScaleRotate (±5% shift, ±10% scale, ±10°) | 0.6 | Variación natural de pose. |
+# | RandomBrightnessContrast (±0.2) | 0.7 | Cambios de iluminación. |
+# | GaussianBlur (3–5 px) | 0.3 | Desenfoque de cámara. |
+# | GaussNoise (5–15 σ) | 0.3 | Ruido de sensor. |
+# | ~~CoarseDropout~~ | — | Oculta landmarks; no responde a la realidad de este dataset. |
+# | ~~JPEG compression~~ | — | Pins ya es web-JPEG; re-comprimir agrava artefactos. |
+# | ~~MotionBlur~~ | — | Redundante con GaussianBlur. |
 
 # %%
 import albumentations as A
 
 augmentation_pipeline = A.Compose(
     [
-        A.HorizontalFlip(p=0.5),  # simétrico en rostros (común en datasets)
-        A.ShiftScaleRotate(
-            shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.5
-        ),  # pequeñas variaciones de pose
-        A.RandomBrightnessContrast(
-            brightness_limit=0.2, contrast_limit=0.2, p=0.5
-        ),  # iluminación variable
-        A.OneOf(
-            [
-                A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                A.MotionBlur(blur_limit=3, p=1.0),
-            ],
-            p=0.3,
-        ),  # desenfoque leve (cámara, movimiento)
-        A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),  # ruido de sensor
-        A.ImageCompression(
-            quality_lower=70, quality_upper=95, p=0.2
-        ),  # compresión JPEG
-        A.CoarseDropout(
-            max_holes=3, max_height=16, max_width=16, min_holes=1, p=0.2
-        ),  # oclusiones parciales
+        A.HorizontalFlip(p=0.5),
+        A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=10, p=0.6),
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.7),
+        A.GaussianBlur(blur_limit=(3, 5), p=0.3),
+        A.GaussNoise(var_limit=(5.0, 15.0), p=0.3),
     ]
 )
 
 
-# Grilla: una imagen + 8 aumentaciones
+# Visualización rápida antes de generar
 def show_augmentations(image_path, n=8):
     img = cv2.imread(str(image_path))
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1141,34 +1145,16 @@ def show_augmentations(image_path, n=8):
     axes[0].axis("off")
     for i in range(n):
         aug = augmentation_pipeline(image=img)["image"]
-        axes[i + 1].imshow(
-            cv2.cvtColor(aug, cv2.COLOR_BGR2RGB) if aug.shape[-1] == 3 else aug
-        )
+        axes[i + 1].imshow(aug)
         axes[i + 1].set_title(f"Aug {i + 1}")
         axes[i + 1].axis("off")
-    fig.suptitle("Pipeline de augmentation", fontsize=14)
+    fig.suptitle("Pipeline de augmentation (offline)", fontsize=14)
     plt.tight_layout()
     plt.show()
 
 
 sample_img = accepted.sample(n=1, seed=42)["path"].to_list()[0]
 show_augmentations(DATA_DIR / sample_img)
-
-# %% [markdown]
-# ### Justificación de transformaciones
-#
-# | Transformación | ¿Incluida? | Justificación |
-# |---|---|---|
-# | Horizontal flip | ✅ | Rostros son aproximadamente simétricos; duplica datos sin destruir identidad. |
-# | Rotación ±10° | ✅ | Variación natural de pose (inclinación de cabeza). |
-# | Flip vertical | ❌ | No ocurre en la realidad; destruye identidad. |
-# | Rotación 90° | ❌ | No ocurre en uso real de la app. |
-# | Brillo/contraste | ✅ | Cambios de iluminación entre ambientes. |
-# | Blur / ruido | ✅ | Desenfoque de cámara o baja luz. |
-# | Coarse dropout | ✅ | Simula oclusiones (gafas, pelo, mano). |
-# | JPEG compression | ✅ | Artefactos de compresión comunes en imágenes web. |
-#
-# La augmentation se aplica **solo en entrenamiento**. Validación y test usan la imagen original alineada.
 
 # %% [markdown]
 # ## Partición de datos (splits)
@@ -1287,6 +1273,105 @@ with open(OUTPUT_DIR / "split_info.json", "w", encoding="utf-8") as f:
     )
 
 print(f"Splits guardados en {OUTPUT_DIR}/")
+
+# %% [markdown]
+# ## Guardado de imágenes alineadas
+#
+# Generamos los recortes de rostro alineados a 112×112 para cada split,
+# respetando la estructura esperada por la notebook `2-train.ipynb`:
+# `output/aligned_112/{split}/{identity}/{nombre}.png`.
+#
+# > **Nota:** usamos el mismo detector SCRFD y la misma función
+# > `face_align.norm_crop` que en el paso de calidad, para garantizar
+# > consistencia entre el preprocesamiento y el entrenamiento.
+
+# %%
+ALIGNED_DIR = OUTPUT_DIR / "aligned_112"
+ALIGNED_DIR.mkdir(exist_ok=True)
+
+# Reutilizamos el detector cargado previamente; si no existe, lo instanciamos.
+if "detector" not in globals():
+    detector_aligned = FaceAnalysis(
+        name="buffalo_l",
+        allowed_modules=["detection"],
+        providers=["CPUExecutionProvider"],
+    )
+    detector_aligned.prepare(
+        ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE
+    )
+else:
+    detector_aligned = detector  # type: ignore[name-defined]
+
+aligned_stats = []
+aug_records = []  # filas a agregar en train.csv
+
+for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test_df)]:
+    out_split = ALIGNED_DIR / split_name
+    out_split.mkdir(exist_ok=True)
+    saved = skipped = 0
+
+    for idx, row in enumerate(split_df.iter_rows(named=True), start=1):
+        img_bgr = cv2.imread(str(DATA_DIR / row["path"]))
+        if img_bgr is None:
+            skipped += 1
+            continue
+
+        faces = detector_aligned.get(img_bgr)
+        if not faces:
+            skipped += 1
+            continue
+
+        face = max(faces, key=lambda f: float(f.det_score))
+        aligned_bgr = face_align.norm_crop(
+            img_bgr, landmark=face.kps.astype(np.float32), image_size=FACE_SIZE
+        )
+
+        out_identity = out_split / row["identity"]
+        out_identity.mkdir(parents=True, exist_ok=True)
+        fname = f"{Path(row['path']).stem}.png"
+        cv2.imwrite(str(out_identity / fname), aligned_bgr)
+        saved += 1
+
+        # Offline augmentation: solo para train, 1 aumentada por original
+        if split_name == "train":
+            aligned_rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB)
+            aug_rgb = augmentation_pipeline(image=aligned_rgb)["image"]
+            aug_bgr = cv2.cvtColor(aug_rgb, cv2.COLOR_RGB2BGR)
+            aug_fname = f"{Path(row['path']).stem}_aug.png"
+            cv2.imwrite(str(out_identity / aug_fname), aug_bgr)
+            aug_records.append(
+                {
+                    "path": str(Path(row["path"]).parent / aug_fname),
+                    "identity": row["identity"],
+                }
+            )
+
+        if idx % 500 == 0 or idx == split_df.height:
+            print(f"  [{split_name:5s}] {idx:4d}/{split_df.height} guardadas")
+
+    aligned_stats.append(
+        {"split": split_name, "guardadas": saved, "omitidas": skipped}
+    )
+    print(
+        f"→ {split_name}: {saved} imágenes guardadas, {skipped} omitidas "
+        f"en {ALIGNED_DIR / split_name}"
+    )
+
+# Actualizamos train.csv para incluir las imágenes aumentadas
+if aug_records:
+    train_existing = pl.read_csv(OUTPUT_DIR / "train.csv")
+    train_aug = pl.from_dicts(aug_records)
+    train_combined = pl.concat([train_existing, train_aug])
+    train_combined.write_csv(OUTPUT_DIR / "train.csv")
+    aligned_stats.append(
+        {"split": "train_aug", "guardadas": len(aug_records), "omitidas": 0}
+    )
+    print(
+        f"\nTrain ampliado: {train_combined.height} filas "
+        f"({len(aug_records)} aumentadas) → {OUTPUT_DIR / 'train.csv'}"
+    )
+
+display(pl.from_dicts(aligned_stats))
 
 # %% [markdown]
 # ## Ética, privacidad y licencias
