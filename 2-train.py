@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv (Python 3.12)
+#     display_name: .venv (3.12.11)
 #     language: python
 #     name: python3
 # ---
@@ -22,6 +22,39 @@
 #
 # Primera etapa:
 # Cargar los recortes exportados, preparar sus etiquetas y visualizar un lote
+
+# %% [markdown]
+# ## Evaluación con identidades reservadas
+#
+# Los splits actuales permiten evaluar **identificación closed-set** sobre las 100 identidades con las que se entrenó la CNN, usando imágenes distintas en cada conjunto.
+#
+# ### Test adicional de verificación
+#
+# Para evaluar verificación con identidades que la CNN nunca vio, se reservan tres personas que habían sido descartadas por tener menos de 100 imágenes:
+#
+# | Identidad | Archivos en el dataset original |
+# |---|---:|
+# | Lionel Messi | 86 |
+# | Cristiano Ronaldo | 98 |
+# | Mark Zuckerberg | 95 |
+#
+# Ninguna de estas identidades aparece en los CSV de train, validación ni test. Sus imágenes quedan fuera del entrenamiento y se usan en un **test adicional de verificación**, común a la CNN y al modelo preentrenado. En este test se comparan los embeddings de pares de imágenes, tanto de la misma persona como de personas distintas. Estas identidades no se agregan a las 100 clases de salida de la CNN.
+#
+# ### Pendientes de preparación
+#
+# La preparación de este conjunto todavía no está hecha. Falta:
+#
+# - revisar etiquetas y duplicados;
+# - aplicar filtros de calidad;
+# - detectar y alinear rostros con el mismo procedimiento que el resto del dataset;
+# - no aplicar augmentation;
+# - exportar un csv separado.
+#
+# Algo que también se debe tener en cuenta es que las cantidades de la tabla corresponden a archivos originales, no a rostros aceptados después del filtrado.
+#
+# ### Rechazo de desconocidos en identificación
+#
+# Para evaluar el rechazo de personas desconocidas, también hay que definir una galería y un conjunto de consultas. Una identidad no vista durante el entrenamiento puede registrarse en la galería; en ese escenario, solo se consideran desconocidas las identidades ausentes de la galería.
 
 # %% [markdown]
 # ## 1. Lectura de las listas de imágenes
@@ -58,7 +91,7 @@ print(train_df.head().to_string(index=False))
 #
 # La CNN recibirá etiquetas enteras, de 0 a 99. Construimos el mapa una sola vez con las identidades de train, ordenadas alfabéticamente, y lo reutilizamos en los tres conjuntos. Así, un número siempre representa a la misma persona.
 #
-# Estos splits son **closed-set**: contienen las mismas personas con fotos distintas. Antes de entrenar debemos definir también la evaluación con identidades no vistas y la calibración del umbral fuera del test.
+# Estos splits son **closed-set**: contienen las mismas personas con fotos distintas. La evaluación adicional con identidades no vistas se describe en el protocolo de evaluación al inicio de la notebook.
 
 # %%
 class_names = sorted(train_df["identity"].unique())
