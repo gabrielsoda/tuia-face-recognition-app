@@ -1147,3 +1147,201 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
     print(f"  Unknown rejection rate   = {id_res['unknown_rejection_rate']:.4f}")
     print(f"  Unknown false acceptance = {id_res['unknown_fa_rate']:.4f}")
 
+# %% [markdown]
+# ### d) Clustering de embeddings
+#
+# Proyección t-SNE y métricas de clustering (silhouette, ARI, NMI con K-Means)
+# para evaluar qué modelo separa mejor las identidades en el espacio de embeddings.
+
+# %%
+from sklearn.decomposition import PCA
+
+
+def cluster_metrics(embs, labels):
+    n_clusters = len(np.unique(labels))
+    km = KMeans(n_clusters=n_clusters, random_state=SEED, n_init=10)
+    pred = km.fit_predict(embs)
+    return {
+        "silhouette": silhouette_score(embs, labels),
+        "ari": adjusted_rand_score(labels, pred),
+        "nmi": normalized_mutual_info_score(labels, pred),
+    }
+
+
+tsne_plots = []
+metrics_rows = []
+for name, embs, labs in [("CNN custom", test_embs, test_labs),
+                          ("InsightFace", insight_test_embs, insight_test_labs)]:
+    # t-SNE rápido con inicialización PCA
+    pca = PCA(n_components=50, random_state=SEED)
+    embs_pca = pca.fit_transform(embs)
+    tsne = TSNE(n_components=2, random_state=SEED, init="pca", learning_rate="auto")
+    emb2d = tsne.fit_transform(embs_pca)
+
+    metrics = cluster_metrics(embs, labs)
+    metrics_rows.append({
+        "modelo": name,
+        "silhouette": round(metrics["silhouette"], 3),
+        "ari": round(metrics["ari"], 3),
+        "nmi": round(metrics["nmi"], 3),
+    })
+
+    n_clusters = len(np.unique(labs))
+    km = KMeans(n_clusters=n_clusters, random_state=SEED, n_init=10)
+    kmeans_labels = km.fit_predict(embs)
+
+    tsne_data = pl.DataFrame(
+        {
+            "x": emb2d[:, 0],
+            "y": emb2d[:, 1],
+            "identity": labs.astype(str).tolist(),
+            "kmeans_label": kmeans_labels.astype(int).tolist(),
+        }
+    )
+
+    chart = (
+        alt.Chart(alt.InlineData(values=tsne_data.to_dicts()))
+        .mark_circle(size=30, opacity=0.6)
+        .encode(
+            x=alt.X("x:Q", title="t-SNE 1"),
+            y=alt.Y("y:Q", title="t-SNE 2"),
+            color=alt.Color(
+                "identity:N",
+                title="Identidad",
+                scale=alt.Scale(scheme="category20"),
+            ),
+            tooltip=["identity:N", "kmeans_label:Q"],
+        )
+        .properties(
+            width=550,
+            height=450,
+            title=f"t-SNE de embeddings {name} (coloreado por identidad)",
+        )
+    )
+    tsne_plots.append(chart)
+
+metrics_df = pl.DataFrame(metrics_rows)
+display(metrics_df)
+display(alt.hconcat(*tsne_plots))
+
+
+# %% [markdown]
+# ### e) Análisis de errores
+#
+# Mostramos ejemplos de falsos positivos (pares negativos con alta similitud)
+# y falsos negativos (pares positivos con baja similitud) para cada modelo.
+
+# %%
+def show_error_pairs(embs, labs, ds, name, n_examples=4):
+    sp, sn, pos_pairs, neg_pairs = build_pairs(embs, labs, n_pos=800, n_neg=800, rng_seed=42)
+    # Falsos negativos: pares positivos con menor similitud
+    fn_sims = [(i, j, s) for (i, j), s in zip(pos_pairs, sp)]
+    fn_sims.sort(key=lambda x: x[2])
+    # Falsos positivos: pares negativos con mayor similitud
+    fp_sims = [(i, j, s) for (i, j), s in zip(neg_pairs, sn)]
+    fp_sims.sort(key=lambda x: x[2], reverse=True)
+
+    fig, axes = plt.subplots(2, n_examples, figsize=(n_examples * 2.5, 6))
+    for row, pairs, title in [(0, fn_sims[:n_examples], "Falsos negativos (misma persona, baja sim)"),
+                             (1, fp_sims[:n_examples], "Falsos positivos (distinta persona, alta sim)")]:
+        for col, (i, j, s) in enumerate(pairs):
+            ax = axes[row, col] if n_examples > 1 else axes[row]
+            img_i, _ = ds[i]
+            img_j, _ = ds[j]
+            # Concatenar las dos imágenes horizontalmente
+            img_i_np = img_i.permute(1, 2, 0).numpy()
+            img_j_np = img_j.permute(1, 2, 0).numpy()
+            pair_img = np.concatenate([img_i_np, img_j_np], axis=1)
+            ax.imshow(pair_img)
+            ax.set_title(f"{title}\n{s:.3f}", fontsize=8)
+            ax.axis("off")
+    plt.suptitle(f"Errores — {name}", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+
+# Mostramos errores para cada modelo 
+for name, embs, labs in [("CNN custom", test_embs, test_labs),
+                          ("InsightFace", insight_test_embs, insight_test_labs)]:
+    show_error_pairs(embs, labs, test_ds, name, n_examples=4)
+
+# %% [markdown]
+# ### f) Costo computacional
+
+# %%
+# Cargamos el mejor custom para reportar tamaño y parámetros
+best_custom = torch.load(MODEL_PTH, map_location="cpu", weights_only=False)
+best_custom.eval()
+custom_params = sum(p.numel() for p in best_custom.parameters() if p.requires_grad)
+custom_size_mb = MODEL_PTH.stat().st_size / (1024 * 1024) if MODEL_PTH.exists() else 0.0
+
+cost_df = pl.DataFrame({
+    "modelo": [f"CNN Custom ({best_exp})", "InsightFace (buffalo_l)"],
+    "params_M": [round(custom_params / 1e6, 2), 43.6],
+    "emb_dim": [128, 512],
+    "inf_ms": [round(results[best_exp]["inf_ms"], 2), round(insight_inf_ms, 2)],
+    "size_MB": [round(custom_size_mb, 2), round(insight_size_mb, 2) if insight_size_mb else "N/A"],
+})
+display(cost_df)
+
+# %% [markdown]
+# ## 3.4 Comparación y elección final
+
+# %%
+# Recolectamos métricas de verificación e identificación sobre test
+metrics = {}
+
+# Custom CNNs: recalculamos embeddings de test para incluir todos los experimentos
+for exp_key in results:
+    model_pth = Path(results[exp_key]["model_pth"])
+    model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
+    model.eval().to(DEVICE)
+    val_e, val_l = extract_embeddings(val_loader, model, DEVICE)
+    test_e, test_l = extract_embeddings(test_loader, model, DEVICE)
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    sp, sn, _, _ = build_pairs(val_e, val_l, n_pos=600, n_neg=600, rng_seed=42)
+    thr = evaluate_verification(sp, sn)["eer_thr"]
+
+    sp_t, sn_t, _, _ = build_pairs(test_e, test_l, n_pos=800, n_neg=800, rng_seed=42)
+    verif = evaluate_verification(sp_t, sn_t)
+    ident = evaluate_identification(test_e, test_l, unknown_frac=0.20, seed=42, thr=thr)
+    name = f"CNN {exp_key}"
+    metrics[name] = {
+        "AUC": verif["auc"],
+        "EER": verif["eer"],
+        "TAR@FAR=1e-2": verif["tar_far_1e-2"],
+        "TAR@FAR=1e-3": verif["tar_far_1e-3"],
+        "Top-1": ident["top1_acc"],
+        "Top-5": ident["top5_acc"],
+        "F1_macro": ident["f1_macro"],
+    }
+
+# InsightFace (ya calculado previamente)
+sp, sn, _, _ = build_pairs(insight_test_embs, insight_test_labs, n_pos=800, n_neg=800, rng_seed=42)
+verif = evaluate_verification(sp, sn)
+sp_v, sn_v, _, _ = build_pairs(insight_val_embs, insight_val_labs, n_pos=600, n_neg=600, rng_seed=42)
+thr = evaluate_verification(sp_v, sn_v)["eer_thr"]
+ident = evaluate_identification(insight_test_embs, insight_test_labs, unknown_frac=0.20, seed=42, thr=thr)
+metrics["InsightFace"] = {
+    "AUC": verif["auc"],
+    "EER": verif["eer"],
+    "TAR@FAR=1e-2": verif["tar_far_1e-2"],
+    "TAR@FAR=1e-3": verif["tar_far_1e-3"],
+    "Top-1": ident["top1_acc"],
+    "Top-5": ident["top5_acc"],
+    "F1_macro": ident["f1_macro"],
+}
+
+comp_data = {
+    "Métrica": ["AUC", "EER", "TAR@FAR=1e-2", "TAR@FAR=1e-3",
+                "Top-1 accuracy", "Top-5 accuracy", "F1 macro"],
+}
+metric_keys = ["AUC", "EER", "TAR@FAR=1e-2", "TAR@FAR=1e-3", "Top-1", "Top-5", "F1_macro"]
+for name in metrics:
+    comp_data[name] = [f"{metrics[name][k]:.4f}" for k in metric_keys]
+comp_df = pl.DataFrame(comp_data)
+display(comp_df)
+
