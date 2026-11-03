@@ -305,42 +305,42 @@ class ModelA2(nn.Module):
             nn.Conv2d(32, 32, 3, padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 128, 1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(32, 64, 1, bias=False),
+            nn.BatchNorm2d(64),
         )
-        self.s1 = nn.Sequential(nn.Conv2d(32, 128, 1, bias=False), nn.BatchNorm2d(128))
+        self.s1 = nn.Sequential(nn.Conv2d(32, 64, 1, bias=False), nn.BatchNorm2d(64))
         # layer2  (112 -> 56)
         self.b2 = nn.Sequential(
-            nn.Conv2d(128, 64, 1, bias=False),
+            nn.Conv2d(64, 64, 1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 256, 1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(64, 128, 1, bias=False),
+            nn.BatchNorm2d(128),
         )
         self.s2 = nn.Sequential(
-            nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256)
+            nn.Conv2d(64, 128, 1, stride=2, bias=False), nn.BatchNorm2d(128)
         )
         # layer3  (56 -> 28)
         self.b3 = nn.Sequential(
-            nn.Conv2d(256, 128, 1, bias=False),
+            nn.Conv2d(128, 128, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 128, 3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, 1, bias=False),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(128, 128, 1, bias=False),
+            nn.BatchNorm2d(128),
         )
         self.s3 = nn.Sequential(
-            nn.Conv2d(256, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256)
+            nn.Conv2d(128, 128, 1, stride=2, bias=False), nn.BatchNorm2d(128)
         )
         self.relu = nn.ReLU(inplace=True)
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(0.3)
-        self.fc_embedding = nn.Linear(256, 128)
+        self.fc_embedding = nn.Linear(128, 128)
         self.bn_embedding = nn.BatchNorm1d(128)
         self.classifier = nn.Linear(128, num_classes)
 
@@ -353,11 +353,10 @@ class ModelA2(nn.Module):
         x = self.dropout(x)
         emb = self.fc_embedding(x)
         emb = self.bn_embedding(emb)
-        emb = F.normalize(emb, p=2, dim=1)
         return self.classifier(emb), emb
 
     def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        return self.forward(x)[1]
+        return F.normalize(self.forward(x)[1], p=2, dim=1)
 
 
 
