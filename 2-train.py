@@ -73,8 +73,8 @@ if callable(disable_max_rows):
 DATA_DIR = Path("data/images")
 OUTPUT_DIR = Path("output")
 ALIGNED_DIR = OUTPUT_DIR / "aligned_112"
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
+MODEL_DIR = Path("models") / "experimento_v2"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 FACE_SIZE = 112
 DETECTION_THRESHOLD = 0.60
@@ -891,15 +891,19 @@ def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
     ])
     top5_known = float(top5_correct[known_mask].mean())
 
-    # Métricas macro (considerando "unknown" como clase adicional con threshold)
-    # Filtramos queries conocidos que fueron clasificados como unknown para prec/rec/f1
-    known_and_accepted = known_mask & (pred_labels != -1) if thr is not None else known_mask
-    prec = precision_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
-                           average="macro", zero_division=0)
-    rec = recall_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
-                       average="macro", zero_division=0)
-    f1 = f1_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
-                  average="macro", zero_division=0)
+    # Métricas macro sobre todas las consultas de identidades registradas.
+    # Un rechazo como unknown cuenta como falso negativo de la identidad real.
+    y_true = qry_labs_arr[known_mask]
+    y_pred = pred_labels[known_mask]
+    prec = precision_score(
+        y_true, y_pred, labels=gal_labs_arr, average="macro", zero_division=0
+    )
+    rec = recall_score(
+        y_true, y_pred, labels=gal_labs_arr, average="macro", zero_division=0
+    )
+    f1 = f1_score(
+        y_true, y_pred, labels=gal_labs_arr, average="macro", zero_division=0
+    )
 
     # Unknown rejection rate: cuántos unknowns tienen best_sim por debajo del threshold
     unknown_mask = ~known_mask
