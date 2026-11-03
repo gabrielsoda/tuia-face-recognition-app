@@ -30,6 +30,11 @@
 # - Alumno 2 : **Gabriel Soda**
 
 # %%
+import os
+# Necesario para GPU ROCm 6700xt
+os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
+
+# %%
 import sys
 import time
 from collections import Counter
@@ -61,7 +66,6 @@ disable_max_rows = getattr(alt.data_transformers, "disable_max_rows", None)
 if callable(disable_max_rows):
     alt.data_transformers.disable_max_rows()
 
-# No dependemos de módulos externos: la arquitectura se define aquí mismo.
 
 # %%
 # --- Configuración ----------------------------------------------------------
@@ -236,88 +240,178 @@ print(f"Batches — train: {len(train_loader)} | val: {len(val_loader)} | test: 
 # ### 3.1.1 Arquitectura
 
 # %%
-class FaceCNN(nn.Module):
-    """
-    CNN custom para reconocimiento facial.
+class ModelA(nn.Module):
+    """CNN custom simple: 3 bloques conv + embedding + clasificador."""
 
-    Entrenada con clasificación (CrossEntropy) sobre N identidades.
-    La salida de ``fc_embedding`` (antes de L2-normalizar) se usa como embedding
-    intermedio; ``get_embedding`` devuelve el vector L2-normalizado listo para
-    comparación con similitud coseno.
-    """
-
-    def __init__(self, num_classes: int, embedding_dim: int = 128, dropout: float = 0.3) -> None:
+    def __init__(self, num_classes: int) -> None:
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.num_classes = num_classes
+        self.features = nn.Sequential(
+            self._conv_block(3, 32),   # 56x56
+            self._conv_block(32, 64),  # 28x28
+            self._conv_block(64, 128), # 14x14
+        )
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(0.2)
+        self.fc_embedding = nn.Linear(128, 128)
+        self.bn_embedding = nn.BatchNorm1d(128)
+        self.classifier = nn.Linear(128, num_classes)
 
-        self.conv1 = self._conv_block(3, 64)
-        self.conv2 = self._conv_block(64, 128)
-        self.conv3 = self._conv_block(128, 256)
-        self.conv4 = self._conv_block(256, 512)
-
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.dropout = nn.Dropout(dropout)
-        self.fc_embedding = nn.Linear(512, embedding_dim)
-        self.bn_embedding = nn.BatchNorm1d(embedding_dim)
-        self.classifier = nn.Linear(embedding_dim, num_classes)
-
-    def _conv_block(self, in_channels: int, out_channels: int) -> nn.Sequential:
+    def _conv_block(self, in_ch: int, out_ch: int) -> nn.Sequential:
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.MaxPool2d(2, 2),
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self.conv1(x)   # 56×56
-        x = self.conv2(x)   # 28×28
-        x = self.conv3(x)   # 14×14
-        x = self.conv4(x)   # 7×7
-        x = self.global_pool(x)  # 1×1
-        x = x.view(x.size(0), -1)
+        x = self.features(x)
+        x = self.pool(x).view(x.size(0), -1)
         x = self.dropout(x)
         emb = self.fc_embedding(x)
         emb = self.bn_embedding(emb)
-        emb_norm = F.normalize(emb, p=2, dim=1)
-        logits = self.classifier(emb_norm)
-        return logits, emb_norm
+        emb = F.normalize(emb, p=2, dim=1)
+        return self.classifier(emb), emb
 
     def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        """Extrae embeddings L2-normalizados para inferencia (sin clasificador)."""
-        with torch.no_grad():
-            x = self.conv1(x)
-            x = self.conv2(x)
-            x = self.conv3(x)
-            x = self.conv4(x)
-            x = self.global_pool(x)
-            x = x.view(x.size(0), -1)
-            x = self.dropout(x)
-            emb = self.fc_embedding(x)
-            emb = self.bn_embedding(emb)
-            return F.normalize(emb, p=2, dim=1)
+        return self.forward(x)[1]
 
 
-model = FaceCNN(num_classes=NUM_CLASSES, embedding_dim=EMBEDDING_DIM, dropout=0.3).to(DEVICE)
+class ModelA2(nn.Module):
+    """ResNet simplificado: stem + 3 bottleneck blocks."""
 
+    def __init__(self, num_classes: int) -> None:
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+        # layer1  (112x112)
+        self.b1 = nn.Sequential(
+            nn.Conv2d(32, 32, 1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 128, 1, bias=False), nn.BatchNorm2d(128),
+        )
+        self.s1 = nn.Sequential(nn.Conv2d(32, 128, 1, bias=False), nn.BatchNorm2d(128))
+        # layer2  (112 -> 56)
+        self.b2 = nn.Sequential(
+            nn.Conv2d(128, 64, 1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+            nn.Conv2d(64, 256, 1, bias=False), nn.BatchNorm2d(256),
+        )
+        self.s2 = nn.Sequential(nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256))
+        # layer3  (56 -> 28)
+        self.b3 = nn.Sequential(
+            nn.Conv2d(256, 128, 1, bias=False), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
+            nn.Conv2d(128, 512, 1, bias=False), nn.BatchNorm2d(512),
+        )
+        self.s3 = nn.Sequential(nn.Conv2d(256, 512, 1, stride=2, bias=False), nn.BatchNorm2d(512))
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(0.3)
+        self.fc_embedding = nn.Linear(512, 128)
+        self.bn_embedding = nn.BatchNorm1d(128)
+        self.classifier = nn.Linear(128, num_classes)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.stem(x)
+        x = self.relu(self.b1(x) + self.s1(x))
+        x = self.relu(self.b2(x) + self.s2(x))
+        x = self.relu(self.b3(x) + self.s3(x))
+        x = self.pool(x).view(x.size(0), -1)
+        x = self.dropout(x)
+        emb = self.fc_embedding(x)
+        emb = self.bn_embedding(emb)
+        emb = F.normalize(emb, p=2, dim=1)
+        return self.classifier(emb), emb
+
+    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward(x)[1]
+
+
+class ModelA3(nn.Module):
+    """ResNeXt simplificado: stem + 3 grouped-conv bottleneck blocks."""
+
+    def __init__(self, num_classes: int, cardinality: int = 32, base_width: int = 4) -> None:
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+
+        def _w(mid: int) -> int:
+            return int(mid * (base_width / 64.0)) * cardinality
+
+        # layer1
+        w1 = _w(32)
+        self.b1 = nn.Sequential(
+            nn.Conv2d(32, w1, 1, bias=False), nn.BatchNorm2d(w1), nn.ReLU(inplace=True),
+            nn.Conv2d(w1, w1, 3, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w1), nn.ReLU(inplace=True),
+            nn.Conv2d(w1, 64, 1, bias=False), nn.BatchNorm2d(64),
+        )
+        self.s1 = nn.Sequential(nn.Conv2d(32, 64, 1, bias=False), nn.BatchNorm2d(64))
+        # layer2
+        w2 = _w(64)
+        self.b2 = nn.Sequential(
+            nn.Conv2d(64, w2, 1, bias=False), nn.BatchNorm2d(w2), nn.ReLU(inplace=True),
+            nn.Conv2d(w2, w2, 3, stride=2, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w2), nn.ReLU(inplace=True),
+            nn.Conv2d(w2, 128, 1, bias=False), nn.BatchNorm2d(128),
+        )
+        self.s2 = nn.Sequential(nn.Conv2d(64, 128, 1, stride=2, bias=False), nn.BatchNorm2d(128))
+        # layer3
+        w3 = _w(128)
+        self.b3 = nn.Sequential(
+            nn.Conv2d(128, w3, 1, bias=False), nn.BatchNorm2d(w3), nn.ReLU(inplace=True),
+            nn.Conv2d(w3, w3, 3, stride=2, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w3), nn.ReLU(inplace=True),
+            nn.Conv2d(w3, 256, 1, bias=False), nn.BatchNorm2d(256),
+        )
+        self.s3 = nn.Sequential(nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256))
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(0.3)
+        self.fc_embedding = nn.Linear(256, 128)
+        self.bn_embedding = nn.BatchNorm1d(128)
+        self.classifier = nn.Linear(128, num_classes)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.stem(x)
+        x = self.relu(self.b1(x) + self.s1(x))
+        x = self.relu(self.b2(x) + self.s2(x))
+        x = self.relu(self.b3(x) + self.s3(x))
+        x = self.pool(x).view(x.size(0), -1)
+        x = self.dropout(x)
+        emb = self.fc_embedding(x)
+        emb = self.bn_embedding(emb)
+        emb = F.normalize(emb, p=2, dim=1)
+        return self.classifier(emb), emb
+
+    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward(x)[1]
+
+
+# --- Instancia inicial (A) ---------------------------------------------------
+model = ModelA(NUM_CLASSES).to(DEVICE)
 n_params = sum(p.numel() for p in model.parameters())
 n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
+print(f"Modelo base: A — CNN custom simple")
 print(f"Parámetros entrenables: {n_trainable:,}")
-print(f"Dimensión del embedding: {EMBEDDING_DIM}")
 print(f"Número de clases: {NUM_CLASSES}")
 
+
+
 # %% [markdown]
-# **Decisiones de diseño:**
-# - **4 bloques conv** (64→128→256→512) con BatchNorm + ReLU + MaxPool: más
-#   capacidad que la versión base (32→64→128→256) para distinguir 100+ identidades.
-# - **Global Average Pooling** al final: reduce parámetros frente a una capa FC
-#   grande y agrega invarianza espacial.
-# - **Dropout 0.3** y **BatchNorm** en el embedding: regularización sin matar
-#   la señal en un modelo pequeño.
-# - **L2-normalización** del embedding: permite comparar con similitud coseno
-#   directamente (producto punto).
+# **Decisiones de diseño (modelo simplificado):**
+# - **A:** CNN custom con bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
+#   Liviana y rápida.
+# - **A2:** ResNet con *bottlenecks* (1×1 → 3×3 → 1×1) + *skip connections*.
+#   Permite entrenar más profundo sin desvanecimiento de gradientes.
+# - **A3:** ResNeXt con *grouped convolutions* (cardinality=32). Explora si la
+#   diversidad de transformaciones mejora la separación de identidades respecto a A2.
+# - **Global Average Pooling**, **Dropout**, **BatchNorm** en embedding y
+#   **L2-normalización** son comunes a todas las variantes.
 
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
@@ -327,116 +421,141 @@ print(f"Número de clases: {NUM_CLASSES}")
 # en validación antes de arrancar para no perder el *best*.
 
 # %%
-MODEL_PTH = MODEL_DIR / "custom_cnn_best.pth"
-CKPT_PATH = MODEL_DIR / "custom_cnn_checkpoint.pt"
+# %%
+def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
+    """Entrena un modelo con early stopping y guarda el mejor checkpoint."""
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3
+    )
 
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="max", factor=0.5, patience=3, verbose=True
-)
+    best_val_acc = 0.0
+    patience_counter = 0
+    history = []
+    start_epoch = 1
 
-best_val_acc = 0.0
-patience_counter = 0
-history = []
-start_epoch = 1
-
-if CKPT_PATH.exists():
-    ckpt = torch.load(CKPT_PATH, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-    start_epoch = ckpt["epoch"] + 1
-    best_val_acc = ckpt["best_val_acc"]
-    patience_counter = ckpt["patience_counter"]
-    history = ckpt["history"]
-    print(f"Restaurado desde checkpoint: epoch {start_epoch - 1}, best_val_acc={best_val_acc:.4f}")
-elif MODEL_PTH.exists():
-    # Fallback: solo tenemos el .pth del modelo completo
-    model = torch.load(MODEL_PTH, map_location=DEVICE, weights_only=False)
-    model.eval()
-    val_loss = val_correct = val_total = 0.0
-    with torch.no_grad():
-        for imgs, lbls in val_loader:
-            imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
-            logits, _ = model(imgs)
-            loss = criterion(logits, lbls)
-            val_loss += loss.item() * imgs.size(0)
-            val_correct += (logits.argmax(dim=1) == lbls).sum().item()
-            val_total += lbls.size(0)
-    val_loss /= val_total
-    val_acc = val_correct / val_total
-    best_val_acc = val_acc
-    print(f"Cargado MODEL_PTH existente. Computado val_acc={best_val_acc:.4f} → best_val_acc")
-    print("Nota: optimizador y scheduler reinician desde cero.")
-
-print(f"Iniciando entrenamiento desde epoch {start_epoch}...")
-for epoch in range(start_epoch, EPOCHS + 1):
-    # Train
-    model.train()
-    train_loss = train_correct = train_total = 0.0
-    for imgs, lbls in train_loader:
-        imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
-        optimizer.zero_grad()
-        logits, _ = model(imgs)
-        loss = criterion(logits, lbls)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item() * imgs.size(0)
-        train_correct += (logits.argmax(dim=1) == lbls).sum().item()
-        train_total += lbls.size(0)
-    train_loss /= train_total
-    train_acc = train_correct / train_total
-
-    # Validation
-    model.eval()
-    val_loss = val_correct = val_total = 0.0
-    with torch.no_grad():
-        for imgs, lbls in val_loader:
-            imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
-            logits, _ = model(imgs)
-            loss = criterion(logits, lbls)
-            val_loss += loss.item() * imgs.size(0)
-            val_correct += (logits.argmax(dim=1) == lbls).sum().item()
-            val_total += lbls.size(0)
-    val_loss /= val_total
-    val_acc = val_correct / val_total
-
-    history.append([epoch, train_loss, train_acc, val_loss, val_acc])
-    scheduler.step(val_acc)
-
-    if val_acc > best_val_acc:
+    if ckpt_path.exists():
+        ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_val_acc = ckpt["best_val_acc"]
+        patience_counter = ckpt["patience_counter"]
+        history = ckpt["history"]
+        print(f"Restaurado desde checkpoint: epoch {start_epoch - 1}, best_val_acc={best_val_acc:.4f}")
+    elif model_pth.exists():
+        model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
+        model.eval()
+        val_loss = val_correct = val_total = 0.0
+        with torch.no_grad():
+            for imgs, lbls in val_loader:
+                imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+                logits, _ = model(imgs)
+                loss = criterion(logits, lbls)
+                val_loss += loss.item() * imgs.size(0)
+                val_correct += (logits.argmax(dim=1) == lbls).sum().item()
+                val_total += lbls.size(0)
+        val_loss /= val_total
+        val_acc = val_correct / val_total
         best_val_acc = val_acc
-        patience_counter = 0
-        torch.save(model, MODEL_PTH)  # modelo completo para el backend
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "best_val_acc": best_val_acc,
-                "patience_counter": patience_counter,
-                "history": history,
-            },
-            CKPT_PATH,
-        )
-        print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-              f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  [MEJOR — guardado]")
-    else:
-        patience_counter += 1
-        print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-              f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
-        if patience_counter >= PATIENCE:
-            print(f"Early stopping en epoch {epoch} ({PATIENCE} épocas sin mejora)")
-            break
+        print(f"Cargado .pth existente. Computado val_acc={best_val_acc:.4f} → best_val_acc")
 
-print(f"\nMejor validation accuracy: {best_val_acc:.4f}")
+    print(f"Iniciando entrenamiento desde epoch {start_epoch}...")
+    for epoch in range(start_epoch, epochs + 1):
+        model.train()
+        train_loss = train_correct = train_total = 0.0
+        for imgs, lbls in train_loader:
+            imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+            optimizer.zero_grad()
+            logits, _ = model(imgs)
+            loss = criterion(logits, lbls)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item() * imgs.size(0)
+            train_correct += (logits.argmax(dim=1) == lbls).sum().item()
+            train_total += lbls.size(0)
+        train_loss /= train_total
+        train_acc = train_correct / train_total
 
-# %% [markdown]
-# ### 3.1.3 Curvas de entrenamiento
+        model.eval()
+        val_loss = val_correct = val_total = 0.0
+        with torch.no_grad():
+            for imgs, lbls in val_loader:
+                imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+                logits, _ = model(imgs)
+                loss = criterion(logits, lbls)
+                val_loss += loss.item() * imgs.size(0)
+                val_correct += (logits.argmax(dim=1) == lbls).sum().item()
+                val_total += lbls.size(0)
+        val_loss /= val_total
+        val_acc = val_correct / val_total
+
+        history.append([epoch, train_loss, train_acc, val_loss, val_acc])
+        scheduler.step(val_acc)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_counter = 0
+            torch.save(model, model_pth)
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "patience_counter": patience_counter,
+                    "history": history,
+                },
+                ckpt_path,
+            )
+            print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                  f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  [MEJOR — guardado]")
+        else:
+            patience_counter += 1
+            print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                  f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+            if patience_counter >= patience:
+                print(f"Early stopping en epoch {epoch} ({patience} épocas sin mejora)")
+                break
+
+    print(f"\nMejor validation accuracy: {best_val_acc:.4f}")
+    return best_val_acc, history
+
+
+@torch.no_grad()
+def extract_embeddings(data_loader, model, device):
+    model.eval()
+    embs, labs = [], []
+    for imgs, lbls in data_loader:
+        imgs = imgs.to(device, non_blocking=True)
+        e = model.get_embedding(imgs)
+        embs.append(e.cpu().numpy())
+        labs.extend(lbls.numpy().tolist())
+    return np.vstack(embs), np.array(labs)
+
 
 # %%
+results = {}
+
+# %%
+# Entrenar A
+model = ModelA(NUM_CLASSES).to(DEVICE)
+desc = "FaceCNN 32→64→128 | emb=128"
+suffix = "custom_cnn"
+print("=" * 70)
+print(f"EXPERIMENTO A: {desc}")
+print("=" * 70)
+
+model_pth = MODEL_DIR / f"{suffix}_best.pth"
+ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
+
+n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+best_val_acc, history = train_model(model, model_pth, ckpt_path)
+
+# Curvas
 hist = np.array(history)
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
@@ -445,7 +564,176 @@ axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes
 axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
 axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
 axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
-plt.suptitle("Entrenamiento — CNN Custom"); plt.tight_layout(); plt.show()
+plt.suptitle("Entrenamiento — A"); plt.tight_layout(); plt.show()
+
+# Tiempo inferencia
+model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
+model.eval().to(DEVICE)
+dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
+with torch.no_grad():
+    for _ in range(5):
+        _ = model.get_embedding(dummy)
+    t0 = time.perf_counter()
+    for _ in range(100):
+        _ = model.get_embedding(dummy)
+    t1 = time.perf_counter()
+inf_ms = ((t1 - t0) / 100) * 1000
+
+pth_size_mb = model_pth.stat().st_size / (1024 * 1024) if model_pth.exists() else 0.0
+
+results["A"] = {
+    "desc": desc,
+    "best_val_acc": best_val_acc,
+    "n_params": n_params,
+    "inf_ms": inf_ms,
+    "pth_size_mb": pth_size_mb,
+    "model_pth": str(model_pth),
+}
+
+del model, dummy
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+# %%
+# Entrenar A2
+model = ModelA2(NUM_CLASSES).to(DEVICE)
+desc = "FaceResNet Bottleneck (1,1,1) | emb=128"
+suffix = "custom_cnn_A2"
+print("=" * 70)
+print(f"EXPERIMENTO A2: {desc}")
+print("=" * 70)
+
+model_pth = MODEL_DIR / f"{suffix}_best.pth"
+ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
+
+n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+best_val_acc, history = train_model(model, model_pth, ckpt_path)
+
+# Curvas
+hist = np.array(history)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
+axes[0].plot(hist[:, 0], hist[:, 3], label="Val loss")
+axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes[0].grid(alpha=0.3)
+axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
+axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
+axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
+plt.suptitle("Entrenamiento — A2"); plt.tight_layout(); plt.show()
+
+# Tiempo inferencia
+model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
+model.eval().to(DEVICE)
+dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
+with torch.no_grad():
+    for _ in range(5):
+        _ = model.get_embedding(dummy)
+    t0 = time.perf_counter()
+    for _ in range(100):
+        _ = model.get_embedding(dummy)
+    t1 = time.perf_counter()
+inf_ms = ((t1 - t0) / 100) * 1000
+
+pth_size_mb = model_pth.stat().st_size / (1024 * 1024) if model_pth.exists() else 0.0
+
+results["A2"] = {
+    "desc": desc,
+    "best_val_acc": best_val_acc,
+    "n_params": n_params,
+    "inf_ms": inf_ms,
+    "pth_size_mb": pth_size_mb,
+    "model_pth": str(model_pth),
+}
+
+del model, dummy
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+# %%
+# Entrenar A3
+model = ModelA3(NUM_CLASSES).to(DEVICE)
+desc = "FaceResNeXt Bottleneck (1,1,1) | emb=128"
+suffix = "custom_cnn_A3"
+print("=" * 70)
+print(f"EXPERIMENTO A3: {desc}")
+print("=" * 70)
+
+model_pth = MODEL_DIR / f"{suffix}_best.pth"
+ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
+
+n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+best_val_acc, history = train_model(model, model_pth, ckpt_path)
+
+# Curvas
+hist = np.array(history)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
+axes[0].plot(hist[:, 0], hist[:, 3], label="Val loss")
+axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes[0].grid(alpha=0.3)
+axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
+axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
+axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
+plt.suptitle("Entrenamiento — A3"); plt.tight_layout(); plt.show()
+
+# Tiempo inferencia
+model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
+model.eval().to(DEVICE)
+dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
+with torch.no_grad():
+    for _ in range(5):
+        _ = model.get_embedding(dummy)
+    t0 = time.perf_counter()
+    for _ in range(100):
+        _ = model.get_embedding(dummy)
+    t1 = time.perf_counter()
+inf_ms = ((t1 - t0) / 100) * 1000
+
+pth_size_mb = model_pth.stat().st_size / (1024 * 1024) if model_pth.exists() else 0.0
+
+results["A3"] = {
+    "desc": desc,
+    "best_val_acc": best_val_acc,
+    "n_params": n_params,
+    "inf_ms": inf_ms,
+    "pth_size_mb": pth_size_mb,
+    "model_pth": str(model_pth),
+}
+
+del model, dummy
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
+# %%
+print("\n" + "=" * 70)
+print("RESUMEN PARCIAL (entrenamiento)")
+print("=" * 70)
+
+summary_train = pl.DataFrame(
+    {
+        "exp": list(results.keys()),
+        "arquitectura": [results[k]["desc"] for k in results],
+        "val_acc": [round(results[k]["best_val_acc"], 4) for k in results],
+        "params_M": [round(results[k]["n_params"] / 1e6, 2) for k in results],
+        "inf_ms": [round(results[k]["inf_ms"], 2) for k in results],
+        "MB": [round(results[k]["pth_size_mb"], 2) for k in results],
+    }
+)
+display(summary_train)
+
+# Elegimos el mejor custom según val_acc para el análisis detallado posterior
+best_exp = max(results, key=lambda k: results[k]["best_val_acc"])
+print(f"\n>>> Mejor modelo custom: {best_exp} — val_acc={results[best_exp]['best_val_acc']:.4f}")
+
+# Cargamos el mejor custom para seguir con la notebook como antes
+MODEL_PTH = Path(results[best_exp]["model_pth"])
+model = torch.load(MODEL_PTH, map_location=DEVICE, weights_only=False)
+model.eval().to(DEVICE)
+
+train_embs, train_labs = extract_embeddings(train_loader, model, DEVICE)
+val_embs,   val_labs   = extract_embeddings(val_loader,   model, DEVICE)
+test_embs,  test_labs  = extract_embeddings(test_loader,  model, DEVICE)
+print(f"\nEmbeddings cargados del ganador ({best_exp}) — test: {test_embs.shape}")
+print(f"Norma L2 promedio (test): {np.linalg.norm(test_embs, axis=1).mean():.4f}")
+
 
 # %% [markdown]
 # > La brecha entre train y val indica el grado de overfitting.  El early
