@@ -73,8 +73,8 @@ if callable(disable_max_rows):
 DATA_DIR = Path("data/images")
 OUTPUT_DIR = Path("output")
 ALIGNED_DIR = OUTPUT_DIR / "aligned_112"
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
+MODEL_DIR = Path("models") / "experimento_v2"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 FACE_SIZE = 112
 DETECTION_THRESHOLD = 0.60

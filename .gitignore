@@ -16,3 +16,4 @@ src/output/*
 *.ipynb
 models/*.pt
 models/*.tmp
+models/experimento_v2/
