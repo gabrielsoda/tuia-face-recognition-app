@@ -64,8 +64,10 @@
 
 # %%
 import os
+
 # Necesario para GPU ROCm 6700xt
 os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
+os.environ["ROCM_PATH"] = "/opt/rocm"
 
 # %%
 import sys
