@@ -759,6 +759,16 @@ del model, dummy
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
 
+# %% [markdown]
+# ### Comparación de los experimentos ejecutados
+#
+# La tabla se construye con los resultados de A, A2 y A3. Se selecciona el
+# mejor modelo según accuracy de validación, sin utilizar el test para elegirlo.
+# El tiempo corresponde a la media de 100 inferencias con lote de una imagen
+# sintética, después de 5 de calentamiento, en el dispositivo indicado.
+# Incluye get_embedding; no incluye lectura, detección, alineación ni transferencia
+# desde CPU. La medición en GPU no sustituye la evaluación de costo en CPU.
+
 # %%
 print("\n" + "=" * 70)
 print("RESUMEN PARCIAL (entrenamiento)")
@@ -770,6 +780,7 @@ summary_train = pl.DataFrame(
         "arquitectura": [results[k]["desc"] for k in results],
         "val_acc": [round(results[k]["best_val_acc"], 4) for k in results],
         "params_M": [round(results[k]["n_params"] / 1e6, 2) for k in results],
+        "dispositivo": [str(DEVICE) for k in results],
         "inf_ms": [round(results[k]["inf_ms"], 2) for k in results],
         "MB": [round(results[k]["pth_size_mb"], 2) for k in results],
     }
