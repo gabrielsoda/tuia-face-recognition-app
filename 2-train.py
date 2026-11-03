@@ -29,6 +29,39 @@
 # - Alumno 1 : **Alejandro Armas**
 # - Alumno 2 : **Gabriel Soda**
 
+# %% [markdown]
+# ## Evaluación con identidades reservadas
+#
+# Los splits actuales permiten evaluar **identificación closed-set** sobre las 100 identidades con las que se entrenó la CNN, usando imágenes distintas en cada conjunto.
+#
+# ### Test adicional de verificación
+#
+# Para evaluar verificación con identidades que la CNN nunca vio, se reservan tres personas que habían sido descartadas por tener menos de 100 imágenes:
+#
+# | Identidad | Archivos en el dataset original |
+# |---|---:|
+# | Lionel Messi | 86 |
+# | Cristiano Ronaldo | 98 |
+# | Mark Zuckerberg | 95 |
+#
+# Ninguna de estas identidades aparece en los CSV de train, validación ni test. Sus imágenes quedan fuera del entrenamiento y se usan en un **test adicional de verificación**, común a la CNN y al modelo preentrenado. En este test se comparan los embeddings de pares de imágenes, tanto de la misma persona como de personas distintas. Estas identidades no se agregan a las 100 clases de salida de la CNN.
+#
+# ### Pendientes de preparación
+#
+# La preparación de este conjunto todavía no está hecha. Falta:
+#
+# - revisar etiquetas y duplicados;
+# - aplicar filtros de calidad;
+# - detectar y alinear rostros con el mismo procedimiento que el resto del dataset;
+# - no aplicar augmentation;
+# - exportar un csv separado.
+#
+# Algo que también se debe tener en cuenta es que las cantidades de la tabla corresponden a archivos originales, no a rostros aceptados después del filtrado.
+#
+# ### Rechazo de desconocidos en identificación
+#
+# Para evaluar el rechazo de personas desconocidas, también hay que definir una galería y un conjunto de consultas. Una identidad no vista durante el entrenamiento puede registrarse en la galería; en ese escenario, solo se consideran desconocidas las identidades ausentes de la galería.
+
 # %%
 import sys
 import time
@@ -43,8 +76,6 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from insightface.app import FaceAnalysis
-from insightface.utils import face_align
 from IPython.display import display
 from sklearn.metrics import (
     auc,
@@ -91,59 +122,6 @@ if DEVICE.type == "cuda":
     print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
 # %% [markdown]
-# ## Preparación de datos alineados (fallback — obsoleto)
-#
-# > ⚠️ La notebook `1-pre-processing.ipynb` ya genera los recortes alineados en
-# > `output/aligned_112/{split}/{identity}/{nombre}.png`.  Este bloque queda
-# > comentado como referencia de emergencia; no hace falta ejecutarlo.
-
-# %%
-# # ---------------------------------------------------------------------------
-# # FALLBACK — sólo si faltan los aligned crops
-# # Estructura correcta: aligned_112/{split}/{identity}/{nombre}.png
-# # ---------------------------------------------------------------------------
-# def align_split(df: pl.DataFrame, split_name: str) -> pl.DataFrame:
-#     out_split = ALIGNED_DIR / split_name
-#     out_split.mkdir(parents=True, exist_ok=True)
-#     detector = FaceAnalysis(
-#         name="buffalo_l",
-#         allowed_modules=["detection"],
-#         providers=["CPUExecutionProvider"],
-#     )
-#     detector.prepare(ctx_id=-1, det_thresh=DETECTION_THRESHOLD, det_size=DETECTION_SIZE)
-#     records = []
-#     for row in df.iter_rows(named=True):
-#         img_bgr = cv2.imread(str(DATA_DIR / row["path"]))
-#         if img_bgr is None:
-#             continue
-#         faces = detector.get(img_bgr)
-#         if not faces:
-#             continue
-#         face = max(faces, key=lambda f: float(f.det_score))
-#         aligned_bgr = face_align.norm_crop(
-#             img_bgr, landmark=face.kps.astype(np.float32), image_size=FACE_SIZE
-#         )
-#         fname = f"{Path(row['path']).stem}.png"
-#         out_dir = out_split / row["identity"]
-#         out_dir.mkdir(parents=True, exist_ok=True)
-#         out_path = out_dir / fname
-#         cv2.imwrite(str(out_path), aligned_bgr)
-#         records.append({"aligned_path": str(out_path.relative_to(ALIGNED_DIR)),
-#                         "identity": row["identity"]})
-#     return pl.from_dicts(records)
-#
-# for split_name, csv_path in [("train", OUTPUT_DIR / "train.csv"),
-#                              ("val",   OUTPUT_DIR / "val.csv"),
-#                              ("test",  OUTPUT_DIR / "test.csv")]:
-#     if not csv_path.exists():
-#         raise RuntimeError(f"Falta {csv_path}. Ejecutá primero la notebook 1.")
-#     if not (ALIGNED_DIR / split_name).exists():
-#         df = pl.read_csv(csv_path)
-#         aligned = align_split(df, split_name)
-#         aligned.write_csv(ALIGNED_DIR / f"{split_name}.csv")
-# # ---------------------------------------------------------------------------
-
-# %% [markdown]
 # ## Carga de splits y codificación de etiquetas
 
 # %%
@@ -157,12 +135,21 @@ train_df = pl.read_csv(OUTPUT_DIR / "train.csv")
 val_df   = pl.read_csv(OUTPUT_DIR / "val.csv")
 test_df  = pl.read_csv(OUTPUT_DIR / "test.csv")
 
-print(f"Splits raw — train: {train_df.height} | val: {val_df.height} | test: {test_df.height}")
+for split_name, df in [("train", train_df), ("val", val_df), ("test", test_df)]:
+    assert df.height > 0, f"El conjunto {split_name} está vacío"
+    assert df["path"].null_count() == 0
+    assert df["identity"].null_count() == 0
+    assert df["path"].n_unique() == df.height, f"Rutas duplicadas en {split_name}"
+    print(f"{split_name}: {df.height} imágenes, {df['identity'].n_unique()} identidades")
+
+print(train_df.head())
 
 # %%
 label_encoder = LabelEncoder()
 label_encoder.fit(sorted(train_df["identity"].unique().to_list()))
 NUM_CLASSES = len(label_encoder.classes_)
+assert set(val_df["identity"]) == set(label_encoder.classes_)
+assert set(test_df["identity"]) == set(label_encoder.classes_)
 print(f"Clases (identidades): {NUM_CLASSES}")
 
 
@@ -187,48 +174,85 @@ test_df  = add_label(test_df)
 
 # %%
 class AlignedDataset(torch.utils.data.Dataset):
-    def __init__(self, df, split_name):
+    def __init__(self, df, image_dir):
         self.df = df
-        self.split_name = split_name
-        self.root = ALIGNED_DIR / split_name
+        self.image_dir = image_dir
 
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
         row = self.df.row(idx, named=True)
-        # Construimos ruta: aligned_112/{split}/{identity}/{stem}.png
-        # Si la notebook 1 guardó de otra forma, ajustar aquí.
-        fname = f"{Path(row['path']).stem}.png"
-        img_path = self.root / row["identity"] / fname
-        if not img_path.exists():
-            # fallback plano sin subcarpeta de identidad
-            img_path = self.root / fname
+        img_path = self.image_dir / row["path"]
         img_bgr = cv2.imread(str(img_path))
         if img_bgr is None:
-            # Último fallback: leer original y alinear on-the-fly
-            img_bgr = cv2.imread(str(DATA_DIR / row["path"]))
-        # Sanity: forzamos 112×112 RGB — si el original no está alineado,
-        # al menos tiene el tamaño que espera la red.
-        img_bgr = cv2.resize(img_bgr, (FACE_SIZE, FACE_SIZE))
+            raise FileNotFoundError(f"No se pudo leer: {img_path}")
+        if img_bgr.shape != (FACE_SIZE, FACE_SIZE, 3):
+            raise ValueError(f"Tamaño inesperado en {img_path}: {img_bgr.shape}")
+
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         img = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
-        label = row["label"]
-        return img, label
+        return img, int(row["label"])
 
 
-train_ds = AlignedDataset(train_df, "train")
-val_ds   = AlignedDataset(val_df,   "val")
-test_ds  = AlignedDataset(test_df,  "test")
+train_ds = AlignedDataset(train_df, ALIGNED_DIR)
+val_ds = AlignedDataset(val_df, ALIGNED_DIR)
+test_ds = AlignedDataset(test_df, ALIGNED_DIR)
 
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=BATCH_SIZE,
-                                           shuffle=True, num_workers=0, pin_memory=True)
-val_loader   = torch.utils.data.DataLoader(val_ds,   batch_size=BATCH_SIZE,
-                                           shuffle=False, num_workers=0, pin_memory=True)
-test_loader  = torch.utils.data.DataLoader(test_ds,  batch_size=BATCH_SIZE,
-                                           shuffle=False, num_workers=0, pin_memory=True)
+# %% [markdown]
+# ## Agrupación de imágenes con DataLoader
+#
+# Cada lote contiene hasta 64 imágenes. Se mezcla solamente train, con un
+# generador de semilla fija. num_workers=0 carga en el proceso de la notebook.
+# La memoria fijada se habilita solo cuando se utiliza CUDA.
+
+# %%
+train_loader = torch.utils.data.DataLoader(
+    train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0,
+    pin_memory=DEVICE.type == "cuda",
+    generator=torch.Generator().manual_seed(SEED),
+)
+val_loader = torch.utils.data.DataLoader(
+    val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0,
+    pin_memory=DEVICE.type == "cuda",
+)
+test_loader = torch.utils.data.DataLoader(
+    test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0,
+    pin_memory=DEVICE.type == "cuda",
+)
 
 print(f"Batches — train: {len(train_loader)} | val: {len(val_loader)} | test: {len(test_loader)}")
+
+# %% [markdown]
+# ## Visualización del lote y sus etiquetas
+#
+# OpenCV lee BGR; el Dataset convierte a RGB, cambia de HWC a CHW y escala
+# a [0, 1]. Para Matplotlib volvemos a HWC. Se muestran hasta 16 imágenes,
+# que pueden ser originales o aumentadas guardadas.
+# Se usa un cargador separado para no avanzar el generador del entrenamiento.
+
+# %%
+preview_loader = torch.utils.data.DataLoader(
+    train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0,
+    generator=torch.Generator().manual_seed(SEED),
+)
+images, labels = next(iter(preview_loader))
+assert images.shape == (min(BATCH_SIZE, len(train_ds)), 3, FACE_SIZE, FACE_SIZE)
+assert images.dtype == torch.float32
+assert labels.dtype == torch.int64
+assert 0 <= images.min() <= images.max() <= 1
+assert 0 <= labels.min() <= labels.max() < NUM_CLASSES
+print("Imágenes:", images.shape, images.dtype)
+print("Etiquetas:", labels.shape, labels.dtype)
+
+fig, axes = plt.subplots(4, 4, figsize=(10, 10))
+for i, ax in enumerate(axes.flat):
+    if i < len(images):
+        ax.imshow(images[i].permute(1, 2, 0).numpy())
+        ax.set_title(label_encoder.classes_[labels[i].item()], fontsize=9)
+    ax.axis("off")
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
 # ## 3.1 Modelo A — CNN Custom
