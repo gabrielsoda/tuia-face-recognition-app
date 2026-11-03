@@ -396,7 +396,7 @@ print(f"Número de clases: {NUM_CLASSES}")
 def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
     """Guarda el mejor modelo y un checkpoint de cada época completada."""
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=3
     )
