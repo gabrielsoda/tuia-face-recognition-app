@@ -440,20 +440,24 @@ print(f"Número de clases: {NUM_CLASSES}")
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
 #
-# El bucle soporta **reanudación**: si existe un checkpoint de entrenamiento
-# se restauran modelo, optimizador, scheduler y métricas.  También evaluamos
-# en validación antes de arrancar para no perder el *best*.
+# El archivo `*_best.pth` conserva el modelo con mayor accuracy de validación.
+# El archivo `*_checkpoint.pt` guarda el estado de la última época completada,
+# incluso si la validación no mejoró: modelo, optimizador, scheduler e historial.
+# Al reanudar se continúa en la época siguiente salvo que ya se haya alcanzado el early stopping, en ese caso
+# no se agregan épocas. Una interrupción a mitad de época obliga a repetirla.
+# Si solo existe el mejor modelo, se recuperan sus pesos y se reinician el
+# optimizador y el historial. No se restaura la secuencia aleatoria exacta.
 
 # %%
 def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
-    """Entrena un modelo con early stopping y guarda el mejor checkpoint."""
+    """Guarda el mejor modelo y un checkpoint de cada época completada."""
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=3
     )
 
-    best_val_acc = 0.0
+    best_val_acc = float("-inf")
     patience_counter = 0
     history = []
     start_epoch = 1
@@ -487,6 +491,10 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         val_acc = val_correct / val_total
         best_val_acc = val_acc
         print(f"Cargado .pth existente. Computado val_acc={best_val_acc:.4f} → best_val_acc")
+
+    if patience_counter >= patience:
+        print("El checkpoint ya alcanzó early stopping, no se agregan épocas.")
+        return best_val_acc, history
 
     print(f"Iniciando entrenamiento desde epoch {start_epoch}...")
     for epoch in range(start_epoch, epochs + 1):
@@ -524,28 +532,33 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience_counter = 0
-            torch.save(model, model_pth)
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "patience_counter": patience_counter,
-                    "history": history,
-                },
-                ckpt_path,
-            )
+            best_tmp = model_pth.with_suffix(model_pth.suffix + ".tmp")
+            torch.save(model, best_tmp)
+            best_tmp.replace(model_pth)
             print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
                   f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  [MEJOR — guardado]")
         else:
             patience_counter += 1
             print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
                   f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
-            if patience_counter >= patience:
-                print(f"Early stopping en epoch {epoch} ({patience} épocas sin mejora)")
-                break
+        # Se guarda la última época incluso cuando no mejora la validación.
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "best_val_acc": best_val_acc,
+            "patience_counter": patience_counter,
+            "history": history,
+        }
+        # Reemplazar el checkpoint solo cuando termina de escribirse.
+        checkpoint_tmp = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
+        torch.save(checkpoint, checkpoint_tmp)
+        checkpoint_tmp.replace(ckpt_path)
+
+        if patience_counter >= patience:
+            print(f"Early stopping en epoch {epoch} ({patience} épocas sin mejora)")
+            break
 
     print(f"\nMejor validation accuracy: {best_val_acc:.4f}")
     return best_val_acc, history
