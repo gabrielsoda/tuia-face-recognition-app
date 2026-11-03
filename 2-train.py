@@ -300,86 +300,44 @@ class ModelA2(nn.Module):
         )
         # layer1  (112x112)
         self.b1 = nn.Sequential(
-            nn.Conv2d(32, 32, 1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, 3, padding=1, bias=False), nn.BatchNorm2d(32), nn.ReLU(inplace=True),
-            nn.Conv2d(32, 128, 1, bias=False), nn.BatchNorm2d(128),
+            nn.Conv2d(32, 32, 1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 128, 1, bias=False),
+            nn.BatchNorm2d(128),
         )
         self.s1 = nn.Sequential(nn.Conv2d(32, 128, 1, bias=False), nn.BatchNorm2d(128))
         # layer2  (112 -> 56)
         self.b2 = nn.Sequential(
-            nn.Conv2d(128, 64, 1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 256, 1, bias=False), nn.BatchNorm2d(256),
+            nn.Conv2d(128, 64, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 256, 1, bias=False),
+            nn.BatchNorm2d(256),
         )
-        self.s2 = nn.Sequential(nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256))
+        self.s2 = nn.Sequential(
+            nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256)
+        )
         # layer3  (56 -> 28)
         self.b3 = nn.Sequential(
-            nn.Conv2d(256, 128, 1, bias=False), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-            nn.Conv2d(128, 512, 1, bias=False), nn.BatchNorm2d(512),
-        )
-        self.s3 = nn.Sequential(nn.Conv2d(256, 512, 1, stride=2, bias=False), nn.BatchNorm2d(512))
-        self.relu = nn.ReLU(inplace=True)
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.dropout = nn.Dropout(0.3)
-        self.fc_embedding = nn.Linear(512, 128)
-        self.bn_embedding = nn.BatchNorm1d(128)
-        self.classifier = nn.Linear(128, num_classes)
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self.stem(x)
-        x = self.relu(self.b1(x) + self.s1(x))
-        x = self.relu(self.b2(x) + self.s2(x))
-        x = self.relu(self.b3(x) + self.s3(x))
-        x = self.pool(x).view(x.size(0), -1)
-        x = self.dropout(x)
-        emb = self.fc_embedding(x)
-        emb = self.bn_embedding(emb)
-        emb = F.normalize(emb, p=2, dim=1)
-        return self.classifier(emb), emb
-
-    def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        return self.forward(x)[1]
-
-
-class ModelA3(nn.Module):
-    """ResNeXt simplificado: stem + 3 grouped-conv bottleneck blocks."""
-
-    def __init__(self, num_classes: int, cardinality: int = 32, base_width: int = 4) -> None:
-        super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(256, 128, 1, bias=False),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 256, 1, bias=False),
+            nn.BatchNorm2d(256),
         )
-
-        def _w(mid: int) -> int:
-            return int(mid * (base_width / 64.0)) * cardinality
-
-        # layer1
-        w1 = _w(32)
-        self.b1 = nn.Sequential(
-            nn.Conv2d(32, w1, 1, bias=False), nn.BatchNorm2d(w1), nn.ReLU(inplace=True),
-            nn.Conv2d(w1, w1, 3, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w1), nn.ReLU(inplace=True),
-            nn.Conv2d(w1, 64, 1, bias=False), nn.BatchNorm2d(64),
+        self.s3 = nn.Sequential(
+            nn.Conv2d(256, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256)
         )
-        self.s1 = nn.Sequential(nn.Conv2d(32, 64, 1, bias=False), nn.BatchNorm2d(64))
-        # layer2
-        w2 = _w(64)
-        self.b2 = nn.Sequential(
-            nn.Conv2d(64, w2, 1, bias=False), nn.BatchNorm2d(w2), nn.ReLU(inplace=True),
-            nn.Conv2d(w2, w2, 3, stride=2, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w2), nn.ReLU(inplace=True),
-            nn.Conv2d(w2, 128, 1, bias=False), nn.BatchNorm2d(128),
-        )
-        self.s2 = nn.Sequential(nn.Conv2d(64, 128, 1, stride=2, bias=False), nn.BatchNorm2d(128))
-        # layer3
-        w3 = _w(128)
-        self.b3 = nn.Sequential(
-            nn.Conv2d(128, w3, 1, bias=False), nn.BatchNorm2d(w3), nn.ReLU(inplace=True),
-            nn.Conv2d(w3, w3, 3, stride=2, padding=1, groups=cardinality, bias=False), nn.BatchNorm2d(w3), nn.ReLU(inplace=True),
-            nn.Conv2d(w3, 256, 1, bias=False), nn.BatchNorm2d(256),
-        )
-        self.s3 = nn.Sequential(nn.Conv2d(128, 256, 1, stride=2, bias=False), nn.BatchNorm2d(256))
         self.relu = nn.ReLU(inplace=True)
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(0.3)
