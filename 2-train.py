@@ -797,5 +797,138 @@ print(f"Modelo de reconocimiento: {insight_rec_path} ({insight_size_mb:.1f} MB)"
 
 
 # %% [markdown]
-# > La brecha entre train y val indica el grado de overfitting.  El early
-# > stopping + dropout ayudan a contenerlo.
+# ## 3.3 Evaluación
+#
+# Mismas métricas, mismos pares, mismo test para ambos modelos.
+
+# %%
+def build_pairs(embeddings, labels, n_pos=800, n_neg=800, rng_seed=42):
+    rng = np.random.default_rng(rng_seed)
+    unique = np.unique(labels)
+    pos_pairs = []
+    for lab in unique:
+        idxs = np.where(labels == lab)[0]
+        if len(idxs) >= 2:
+            # combinaciones simples; limitamos a n_pos para rapidez
+            for i in range(min(len(idxs) - 1, max(1, n_pos // len(unique) + 1))):
+                pos_pairs.append((idxs[i], idxs[i + 1]))
+    rng.shuffle(pos_pairs)
+    pos_pairs = pos_pairs[:n_pos]
+
+    neg_pairs = []
+    for _ in range(n_neg):
+        l1, l2 = rng.choice(unique, 2, replace=False)
+        i = rng.choice(np.where(labels == l1)[0])
+        j = rng.choice(np.where(labels == l2)[0])
+        neg_pairs.append((i, j))
+
+    sims_pos = [float(np.dot(embeddings[i], embeddings[j])) for i, j in pos_pairs]
+    sims_neg = [float(np.dot(embeddings[i], embeddings[j])) for i, j in neg_pairs]
+    return sims_pos, sims_neg, pos_pairs, neg_pairs
+
+
+
+def evaluate_verification(sims_pos, sims_neg):
+    y_true = [1] * len(sims_pos) + [0] * len(sims_neg)
+    y_scores = sims_pos + sims_neg
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+    fnr = 1 - tpr
+    eer_idx = np.nanargmin(np.abs(fpr - fnr))
+    eer = float(fpr[eer_idx])
+    eer_thr = float(thresholds[eer_idx])
+    # TAR @ FAR objetivo
+    def tar_at_far(target_far):
+        idx = np.searchsorted(fpr, target_far, side="right") - 1
+        idx = max(0, idx)
+        return float(tpr[idx])
+    return {"auc": roc_auc, "eer": eer, "eer_thr": eer_thr,
+            "tar_far_1e-2": tar_at_far(1e-2), "tar_far_1e-3": tar_at_far(1e-3),
+            "fpr": fpr, "tpr": tpr, "thresholds": thresholds}
+
+
+def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
+    rng = np.random.default_rng(seed)
+    unique = np.unique(labels)
+    rng.shuffle(unique)
+    n_unknown = max(1, int(len(unique) * unknown_frac))
+    gallery_ids = unique[n_unknown:]
+    unknown_ids = unique[:n_unknown]
+
+    gal_embs, gal_labs = [], []
+    qry_embs, qry_labs, qry_is_known = [], [], []
+    for lab in gallery_ids:
+        idxs = np.where(labels == lab)[0]
+        rng.shuffle(idxs)
+        gal_embs.append(embs[idxs[0]])
+        gal_labs.append(lab)
+        for q in idxs[1:]:
+            qry_embs.append(embs[q]); qry_labs.append(lab); qry_is_known.append(True)
+    for lab in unknown_ids:
+        idxs = np.where(labels == lab)[0]
+        for q in idxs:
+            qry_embs.append(embs[q]); qry_labs.append(lab); qry_is_known.append(False)
+
+    gal_arr = np.array(gal_embs)
+    gal_labs_arr = np.array(gal_labs)
+    qry_arr = np.array(qry_embs)
+    qry_labs_arr = np.array(qry_labs)
+    known_mask = np.array(qry_is_known)
+
+    sims = qry_arr @ gal_arr.T
+    best_sim = sims.max(axis=1)
+    pred_idx = sims.argmax(axis=1)
+    pred_labels = gal_labs_arr[pred_idx]
+
+    # Si hay threshold, marcamos como "unknown" (-1) cuando best_sim < thr
+    if thr is not None:
+        pred_labels = np.where(best_sim < thr, -1, pred_labels)
+
+    # Rank-1 / Top-5  (sobre known only, para no sesgar con unknowns)
+    top1_known = float((pred_labels[known_mask] == qry_labs_arr[known_mask]).mean())
+    # Top-5
+    top5_idx = np.argpartition(-sims, min(5, sims.shape[1] - 1), axis=1)[:, :5]
+    top5_correct = np.array([
+        qry_labs_arr[i] in gal_labs_arr[top5_idx[i]] for i in range(len(qry_labs_arr))
+    ])
+    top5_known = float(top5_correct[known_mask].mean())
+
+    # Métricas macro (considerando "unknown" como clase adicional con threshold)
+    # Filtramos queries conocidos que fueron clasificados como unknown para prec/rec/f1
+    known_and_accepted = known_mask & (pred_labels != -1) if thr is not None else known_mask
+    prec = precision_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
+                           average="macro", zero_division=0)
+    rec = recall_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
+                       average="macro", zero_division=0)
+    f1 = f1_score(qry_labs_arr[known_and_accepted], pred_labels[known_and_accepted],
+                  average="macro", zero_division=0)
+
+    # Unknown rejection rate: cuántos unknowns tienen best_sim por debajo del threshold
+    unknown_mask = ~known_mask
+    unknown_rejection_rate = 0.0
+    if thr is not None and unknown_mask.sum() > 0:
+        unknown_rejection_rate = float((best_sim[unknown_mask] < thr).mean())
+
+    # False acceptance among unknowns (unknowns que pasan el umbral)
+    unknown_fa_rate = 0.0
+    if thr is not None and unknown_mask.sum() > 0:
+        unknown_fa_rate = float((best_sim[unknown_mask] >= thr).mean())
+
+    return {
+        "top1_acc": top1_known,
+        "top5_acc": top5_known,
+        "precision_macro": prec,
+        "recall_macro": rec,
+        "f1_macro": f1,
+        "n_gallery": len(gal_arr),
+        "n_queries": len(qry_arr),
+        "n_known_queries": int(known_mask.sum()),
+        "n_unknown_queries": int(unknown_mask.sum()),
+        "best_sims": best_sim,
+        "query_labels": qry_labs_arr,
+        "pred_labels": pred_labels,
+        "known_mask": known_mask,
+        "unknown_rejection_rate": unknown_rejection_rate,
+        "unknown_fa_rate": unknown_fa_rate,
+    }
+
