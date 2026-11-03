@@ -720,6 +720,80 @@ val_embs, val_labs = extract_embeddings(val_loader, model, DEVICE)
 test_embs, test_labs = extract_embeddings(test_loader, model, DEVICE)
 print(f"\nEmbeddings cargados del ganador ({best_exp}) — test: {test_embs.shape}")
 print(f"Norma L2 promedio (test): {np.linalg.norm(test_embs, axis=1).mean():.4f}")
+# %% [markdown]
+# ## 3.2 Modelo B — InsightFace / ArcFace (preentrenado)
+#
+# Usamos el reconocedor de InsightFace (`buffalo_l`) como extractor puro.
+# No reentrenamos: solo extraemos embeddings del mismo split de test.
+# - **Arquitectura:** ResNet-50 entrenado con ArcFace.
+# - **Datos de entrenamiento:** millones de rostros públicos (MS1M / WebFace).
+# - **Dimensión del embedding:** 512.
+# - **Licencia:** uso no comercial / investigación (InsightFace).
+
+# %%
+face_analysis = FaceAnalysis(name="buffalo_l", allowed_modules=["detection","recognition"])
+face_analysis.prepare(ctx_id=0)
+recognition_model = face_analysis.models["recognition"]
+
+insight_test_embs = []
+insight_test_labs = []
+insight_val_embs = []
+insight_val_labs = []
+
+for images, labels in test_loader:
+    # AlignedDataset entrega RGB en [0, 1]; ArcFace recibe imágenes BGR uint8.
+    images_bgr = (images.permute(0, 2, 3, 1).numpy() * 255).round().astype(np.uint8)
+    images_bgr = images_bgr[..., ::-1]
+
+    for img_bgr, label in zip(images_bgr, labels.numpy()):
+        embedding = recognition_model.get_feat(img_bgr)
+        insight_test_embs.append(np.asarray(embedding).reshape(-1))
+        insight_test_labs.append(label.item())
+
+for images, labels in val_loader:
+    # AlignedDataset entrega RGB en [0, 1]; ArcFace recibe imágenes BGR uint8.
+    images_bgr = (images.permute(0, 2, 3, 1).numpy() * 255).round().astype(np.uint8)
+    images_bgr = images_bgr[..., ::-1]
+
+    for img_bgr, label in zip(images_bgr, labels.numpy()):
+        embedding = recognition_model.get_feat(img_bgr)
+        insight_val_embs.append(np.asarray(embedding).reshape(-1))
+        insight_val_labs.append(label.item())
+
+insight_test_embs = np.vstack(insight_test_embs)
+insight_test_embs /= np.linalg.norm(insight_test_embs, axis=1, keepdims=True)
+insight_test_labs = np.array(insight_test_labs)
+
+insight_val_embs = np.vstack(insight_val_embs)
+insight_val_embs /= np.linalg.norm(insight_val_embs, axis=1, keepdims=True)
+insight_val_labs = np.array(insight_val_labs)
+
+print(f"InsightFace test embeddings: {insight_test_embs.shape}")
+print(f"Norma L2 promedio: {np.linalg.norm(insight_test_embs, axis=1).mean():.4f}")
+
+print(f"InsightFace val embeddings: {insight_val_embs.shape}")
+print(f"Norma L2 promedio: {np.linalg.norm(insight_val_embs, axis=1).mean():.4f}")
+
+                                                                                                                                    
+# --- Métricas de costo para InsightFace (usadas en sección 3.3 f) ---                                                               
+# Tiempo de inferencia                                                                                                               
+dummy_bgr = np.random.randint(0, 255, (FACE_SIZE, FACE_SIZE, 3), dtype=np.uint8)                                                     
+for _ in range(5):                                                                                                                   
+    _ = recognition_model.get_feat(dummy_bgr)                                                                                        
+t0 = time.perf_counter()                                                                                                             
+for _ in range(100):                                                                                                                 
+    _ = recognition_model.get_feat(dummy_bgr)                                                                                        
+t1 = time.perf_counter()                                                                                                             
+insight_inf_ms = ((t1 - t0) / 100) * 1000                                                                                            
+print(f"Tiempo medio inferencia InsightFace: {insight_inf_ms:.2f} ms/rostro")                                                        
+                                                                                                                                    
+# Ruta y tamaño del modelo .onnx                                                                                                     
+insight_model_dir = Path.home() / ".insightface" / "models" / "buffalo_l"                                                            
+insight_rec_path = insight_model_dir / "w600k_r50.onnx"                                                                              
+insight_size_mb = (                                                                                                                  
+    insight_rec_path.stat().st_size / (1024 * 1024) if insight_rec_path.exists() else 0.0                                            
+)                                                                                                                                    
+print(f"Modelo de reconocimiento: {insight_rec_path} ({insight_size_mb:.1f} MB)")    
 
 
 # %% [markdown]
