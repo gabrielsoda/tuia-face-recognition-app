@@ -281,11 +281,10 @@ class ModelA(nn.Module):
         x = self.dropout(x)
         emb = self.fc_embedding(x)
         emb = self.bn_embedding(emb)
-        emb = F.normalize(emb, p=2, dim=1)
         return self.classifier(emb), emb
 
     def get_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        return self.forward(x)[1]
+        return F.normalize(self.forward(x)[1], p=2, dim=1)
 
 
 class ModelA2(nn.Module):
