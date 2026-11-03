@@ -1248,20 +1248,22 @@ display(alt.hconcat(*tsne_plots))
 # y falsos negativos (pares positivos con baja similitud) para cada modelo.
 
 # %%
-def show_error_pairs(embs, labs, ds, name, n_examples=4):
+def show_error_pairs(embs, labs, ds, name, thr, n_examples=4):
     sp, sn, pos_pairs, neg_pairs = build_pairs(embs, labs, n_pos=800, n_neg=800, rng_seed=42)
-    # Falsos negativos: pares positivos con menor similitud
-    fn_sims = [(i, j, s) for (i, j), s in zip(pos_pairs, sp)]
+    # Falsos negativos: pares positivos por debajo del umbral
+    fn_sims = [(i, j, s) for (i, j), s in zip(pos_pairs, sp) if s < thr]
     fn_sims.sort(key=lambda x: x[2])
-    # Falsos positivos: pares negativos con mayor similitud
-    fp_sims = [(i, j, s) for (i, j), s in zip(neg_pairs, sn)]
+    # Falsos positivos: pares negativos que alcanzan el umbral
+    fp_sims = [(i, j, s) for (i, j), s in zip(neg_pairs, sn) if s >= thr]
     fp_sims.sort(key=lambda x: x[2], reverse=True)
 
-    fig, axes = plt.subplots(2, n_examples, figsize=(n_examples * 2.5, 6))
+    fig, axes = plt.subplots(2, n_examples, figsize=(n_examples * 2.5, 6), squeeze=False)
+    for ax in axes.flat:
+        ax.axis("off")
     for row, pairs, title in [(0, fn_sims[:n_examples], "Falsos negativos (misma persona, baja sim)"),
                              (1, fp_sims[:n_examples], "Falsos positivos (distinta persona, alta sim)")]:
         for col, (i, j, s) in enumerate(pairs):
-            ax = axes[row, col] if n_examples > 1 else axes[row]
+            ax = axes[row, col]
             img_i, _ = ds[i]
             img_j, _ = ds[j]
             # Concatenar las dos imágenes horizontalmente
@@ -1271,7 +1273,11 @@ def show_error_pairs(embs, labs, ds, name, n_examples=4):
             ax.imshow(pair_img)
             ax.set_title(f"{title}\n{s:.3f}", fontsize=8)
             ax.axis("off")
-    plt.suptitle(f"Errores — {name}", fontsize=12)
+    if not fn_sims:
+        axes[0, 0].set_title("Sin falsos negativos", fontsize=8)
+    if not fp_sims:
+        axes[1, 0].set_title("Sin falsos positivos", fontsize=8)
+    plt.suptitle(f"Errores — {name} (umbral={thr:.4f})", fontsize=12)
     plt.tight_layout()
     plt.show()
 
@@ -1279,7 +1285,7 @@ def show_error_pairs(embs, labs, ds, name, n_examples=4):
 # Mostramos errores para cada modelo 
 for name, embs, labs in [("CNN custom", test_embs, test_labs),
                           ("InsightFace", insight_test_embs, insight_test_labs)]:
-    show_error_pairs(embs, labs, test_ds, name, n_examples=4)
+    show_error_pairs(embs, labs, test_ds, name, thresholds[name], n_examples=4)
 
 # %% [markdown]
 # ### f) Costo computacional
