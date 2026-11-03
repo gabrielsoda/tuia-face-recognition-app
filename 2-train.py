@@ -679,7 +679,7 @@ if torch.cuda.is_available():
 # %% [markdown]
 # ### Comparación de los experimentos ejecutados
 #
-# La tabla se construye con los resultados de A, A2 y A3. Se selecciona el
+# La tabla se construye con los resultados de A y A2. Se selecciona el
 # mejor modelo según accuracy de validación, sin utilizar el test para elegirlo.
 # El tiempo corresponde a la media de 100 inferencias con lote de una imagen
 # sintética, después de 5 de calentamiento, en el dispositivo indicado.
