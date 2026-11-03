@@ -357,7 +357,7 @@ CKPT_PATH = MODEL_DIR / "custom_cnn_checkpoint.pt"
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="max", factor=0.5, patience=3, verbose=True
+    optimizer, mode="max", factor=0.5, patience=3
 )
 
 best_val_acc = 0.0
