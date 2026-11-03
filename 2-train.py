@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.1
 #   kernelspec:
-#     display_name: .venv (3.12.11)
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -19,48 +19,11 @@
 # Entrenamos una **CNN custom** (Modelo A), la evaluamos junto a un modelo
 # preentrenado **InsightFace / ArcFace** (Modelo B) sobre el mismo conjunto de
 # test, y elegimos el mejor para integrar en la aplicación.
-#
-# > **Entradas esperadas de la Parte 1:**
-# > - `output/train.csv`, `output/val.csv`, `output/test.csv` (columnas `path`, `identity`)
-# > - `output/aligned_112/{split}/{identity}/{nombre}.png` (rostros alineados 112×112)
 
 # %% [markdown]
 # ## Equipo
 # - Alumno 1 : **Alejandro Armas**
 # - Alumno 2 : **Gabriel Soda**
-
-# %% [markdown]
-# ## Evaluación con identidades reservadas
-#
-# Los splits actuales permiten evaluar **identificación closed-set** sobre las 100 identidades con las que se entrenó la CNN, usando imágenes distintas en cada conjunto.
-#
-# ### Test adicional de verificación
-#
-# Para evaluar verificación con identidades que la CNN nunca vio, se reservan tres personas que habían sido descartadas por tener menos de 100 imágenes:
-#
-# | Identidad | Archivos en el dataset original |
-# |---|---:|
-# | Lionel Messi | 86 |
-# | Cristiano Ronaldo | 98 |
-# | Mark Zuckerberg | 95 |
-#
-# Ninguna de estas identidades aparece en los CSV de train, validación ni test. Sus imágenes quedan fuera del entrenamiento y se usan en un **test adicional de verificación**, común a la CNN y al modelo preentrenado. En este test se comparan los embeddings de pares de imágenes, tanto de la misma persona como de personas distintas. Estas identidades no se agregan a las 100 clases de salida de la CNN.
-#
-# ### Pendientes de preparación
-#
-# La preparación de este conjunto todavía no está hecha. Falta:
-#
-# - revisar etiquetas y duplicados;
-# - aplicar filtros de calidad;
-# - detectar y alinear rostros con el mismo procedimiento que el resto del dataset;
-# - no aplicar augmentation;
-# - exportar un csv separado.
-#
-# Algo que también se debe tener en cuenta es que las cantidades de la tabla corresponden a archivos originales, no a rostros aceptados después del filtrado.
-#
-# ### Rechazo de desconocidos en identificación
-#
-# Para evaluar el rechazo de personas desconocidas, también hay que definir una galería y un conjunto de consultas. Una identidad no vista durante el entrenamiento puede registrarse en la galería; en ese escenario, solo se consideran desconocidas las identidades ausentes de la galería.
 
 # %%
 import os
@@ -83,6 +46,7 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from insightface.app import FaceAnalysis
 from IPython.display import display
 from sklearn.metrics import (
     auc,
@@ -91,7 +55,11 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_curve,
+    adjusted_rand_score,
+    normalized_mutual_info_score,
+    silhouette_score,
 )
+from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import LabelEncoder
 
@@ -131,22 +99,26 @@ if DEVICE.type == "cuda":
 # ## Carga de splits y codificación de etiquetas
 
 # %%
-for split_name, csv_path in [("train", OUTPUT_DIR / "train.csv"),
-                             ("val",   OUTPUT_DIR / "val.csv"),
-                             ("test",  OUTPUT_DIR / "test.csv")]:
+for split_name, csv_path in [
+    ("train", OUTPUT_DIR / "train.csv"),
+    ("val", OUTPUT_DIR / "val.csv"),
+    ("test", OUTPUT_DIR / "test.csv"),
+]:
     if not csv_path.exists():
         raise RuntimeError(f"No se encontró {csv_path}. Ejecutá primero la notebook 1.")
 
 train_df = pl.read_csv(OUTPUT_DIR / "train.csv")
-val_df   = pl.read_csv(OUTPUT_DIR / "val.csv")
-test_df  = pl.read_csv(OUTPUT_DIR / "test.csv")
+val_df = pl.read_csv(OUTPUT_DIR / "val.csv")
+test_df = pl.read_csv(OUTPUT_DIR / "test.csv")
 
 for split_name, df in [("train", train_df), ("val", val_df), ("test", test_df)]:
     assert df.height > 0, f"El conjunto {split_name} está vacío"
     assert df["path"].null_count() == 0
     assert df["identity"].null_count() == 0
     assert df["path"].n_unique() == df.height, f"Rutas duplicadas en {split_name}"
-    print(f"{split_name}: {df.height} imágenes, {df['identity'].n_unique()} identidades")
+    print(
+        f"{split_name}: {df.height} imágenes, {df['identity'].n_unique()} identidades"
+    )
 
 print(train_df.head())
 
@@ -162,21 +134,20 @@ print(f"Clases (identidades): {NUM_CLASSES}")
 # Map identity → label en los 3 splits
 def add_label(df):
     return df.with_columns(
-        pl.Series("label",
-                  label_encoder.transform(df["identity"].to_list()),
-                  dtype=pl.Int64)
+        pl.Series(
+            "label", label_encoder.transform(df["identity"].to_list()), dtype=pl.Int64
+        )
     )
 
+
 train_df = add_label(train_df)
-val_df   = add_label(val_df)
-test_df  = add_label(test_df)
+val_df = add_label(val_df)
+test_df = add_label(test_df)
 
 # %% [markdown]
 # ## Dataset / DataLoader de PyTorch
 #
-# Leemos los recortes alineados 112×112 producidos por la notebook 1.  No se
-# aplica augmentation aquí: el pipeline de preprocesamiento (detección + alineación
-# + augmentation si corresponde) es responsabilidad de la Parte 1.
+# Leemos los recortes alineados 112×112 producidos por la notebook 1
 
 # %%
 class AlignedDataset(torch.utils.data.Dataset):
@@ -214,20 +185,31 @@ test_ds = AlignedDataset(test_df, ALIGNED_DIR)
 
 # %%
 train_loader = torch.utils.data.DataLoader(
-    train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0,
+    train_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=0,
     pin_memory=DEVICE.type == "cuda",
     generator=torch.Generator().manual_seed(SEED),
 )
 val_loader = torch.utils.data.DataLoader(
-    val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0,
+    val_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=0,
     pin_memory=DEVICE.type == "cuda",
 )
 test_loader = torch.utils.data.DataLoader(
-    test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0,
+    test_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=0,
     pin_memory=DEVICE.type == "cuda",
 )
 
-print(f"Batches — train: {len(train_loader)} | val: {len(val_loader)} | test: {len(test_loader)}")
+print(
+    f"Batches — train: {len(train_loader)} | val: {len(val_loader)} | test: {len(test_loader)}"
+)
 
 # %% [markdown]
 # ## Visualización del lote y sus etiquetas
@@ -239,7 +221,10 @@ print(f"Batches — train: {len(train_loader)} | val: {len(val_loader)} | test: 
 
 # %%
 preview_loader = torch.utils.data.DataLoader(
-    train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0,
+    train_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=0,
     generator=torch.Generator().manual_seed(SEED),
 )
 images, labels = next(iter(preview_loader))
@@ -272,9 +257,9 @@ class ModelA(nn.Module):
     def __init__(self, num_classes: int) -> None:
         super().__init__()
         self.features = nn.Sequential(
-            self._conv_block(3, 32),   # 56x56
+            self._conv_block(3, 32),  # 56x56
             self._conv_block(32, 64),  # 28x28
-            self._conv_block(64, 128), # 14x14
+            self._conv_block(64, 128),  # 14x14
         )
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.dropout = nn.Dropout(0.2)
