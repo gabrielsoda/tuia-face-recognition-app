@@ -14,3 +14,5 @@ data/*
 src/output/*
 !src/output/.gitkeep
 *.ipynb
+models/*.pt
+models/*.tmp
