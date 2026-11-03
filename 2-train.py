@@ -676,66 +676,6 @@ del model, dummy
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
 
-# %%
-# Entrenar A3
-model = ModelA3(NUM_CLASSES).to(DEVICE)
-desc = "FaceResNeXt Bottleneck (1,1,1) | emb=128"
-suffix = "custom_cnn_A3"
-print("=" * 70)
-print(f"EXPERIMENTO A3: {desc}")
-print("=" * 70)
-
-model_pth = MODEL_DIR / f"{suffix}_best.pth"
-ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
-
-n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-best_val_acc, history = train_model(model, model_pth, ckpt_path)
-
-# Curvas
-hist = np.array(history)
-fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
-axes[0].plot(hist[:, 0], hist[:, 3], label="Val loss")
-axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes[0].grid(alpha=0.3)
-axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
-axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
-axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
-plt.suptitle("Entrenamiento — A3"); plt.tight_layout(); plt.show()
-
-# Tiempo inferencia
-model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
-model.eval().to(DEVICE)
-dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
-with torch.no_grad():
-    for _ in range(5):
-        _ = model.get_embedding(dummy)
-    # Esperar a que termine el calentamiento antes de iniciar el reloj.
-    if DEVICE.type == "cuda":
-        torch.cuda.synchronize(DEVICE)
-    t0 = time.perf_counter()
-    for _ in range(100):
-        _ = model.get_embedding(dummy)
-    # Esperar a que terminen las inferencias antes de detener el reloj.
-    if DEVICE.type == "cuda":
-        torch.cuda.synchronize(DEVICE)
-    t1 = time.perf_counter()
-inf_ms = ((t1 - t0) / 100) * 1000
-
-pth_size_mb = model_pth.stat().st_size / (1024 * 1024) if model_pth.exists() else 0.0
-
-results["A3"] = {
-    "desc": desc,
-    "best_val_acc": best_val_acc,
-    "n_params": n_params,
-    "inf_ms": inf_ms,
-    "pth_size_mb": pth_size_mb,
-    "model_pth": str(model_pth),
-}
-
-del model, dummy
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-
 # %% [markdown]
 # ### Comparación de los experimentos ejecutados
 #
@@ -766,7 +706,9 @@ display(summary_train)
 
 # Elegimos el mejor custom según val_acc para el análisis detallado posterior
 best_exp = max(results, key=lambda k: results[k]["best_val_acc"])
-print(f"\n>>> Mejor modelo custom: {best_exp} — val_acc={results[best_exp]['best_val_acc']:.4f}")
+print(
+    f"\n>>> Mejor modelo custom: {best_exp} — val_acc={results[best_exp]['best_val_acc']:.4f}"
+)
 
 # Cargamos el mejor custom para seguir con la notebook como antes
 MODEL_PTH = Path(results[best_exp]["model_pth"])
@@ -774,8 +716,8 @@ model = torch.load(MODEL_PTH, map_location=DEVICE, weights_only=False)
 model.eval().to(DEVICE)
 
 train_embs, train_labs = extract_embeddings(train_loader, model, DEVICE)
-val_embs,   val_labs   = extract_embeddings(val_loader,   model, DEVICE)
-test_embs,  test_labs  = extract_embeddings(test_loader,  model, DEVICE)
+val_embs, val_labs = extract_embeddings(val_loader, model, DEVICE)
+test_embs, test_labs = extract_embeddings(test_loader, model, DEVICE)
 print(f"\nEmbeddings cargados del ganador ({best_exp}) — test: {test_embs.shape}")
 print(f"Norma L2 promedio (test): {np.linalg.norm(test_embs, axis=1).mean():.4f}")
 
