@@ -361,6 +361,7 @@ class ModelA2(nn.Module):
         return self.forward(x)[1]
 
 
+
 # --- Instancia inicial (A) ---------------------------------------------------
 model = ModelA(NUM_CLASSES).to(DEVICE)
 n_params = sum(p.numel() for p in model.parameters())
@@ -370,17 +371,15 @@ print(f"Parámetros entrenables: {n_trainable:,}")
 print(f"Número de clases: {NUM_CLASSES}")
 
 
-
 # %% [markdown]
 # **Decisiones de diseño (modelo simplificado):**
 # - **A:** CNN custom con bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
 #   Liviana y rápida.
 # - **A2:** ResNet con *bottlenecks* (1×1 → 3×3 → 1×1) + *skip connections*.
 #   Permite entrenar más profundo sin desvanecimiento de gradientes.
-# - **A3:** ResNeXt con *grouped convolutions* (cardinality=32). Explora si la
-#   diversidad de transformaciones mejora la separación de identidades respecto a A2.
+#
 # - **Global Average Pooling**, **Dropout**, **BatchNorm** en embedding y
-#   **L2-normalización** son comunes a todas las variantes.
+#   **L2-normalización** son comunes a ambas variantes.
 
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
@@ -416,7 +415,9 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         best_val_acc = ckpt["best_val_acc"]
         patience_counter = ckpt["patience_counter"]
         history = ckpt["history"]
-        print(f"Restaurado desde checkpoint: epoch {start_epoch - 1}, best_val_acc={best_val_acc:.4f}")
+        print(
+            f"Restaurado desde checkpoint: epoch {start_epoch - 1}, best_val_acc={best_val_acc:.4f}"
+        )
     elif model_pth.exists():
         # Cargar pesos sin reemplazar el modelo asociado al optimizador.
         saved_model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
@@ -426,7 +427,10 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         val_loss = val_correct = val_total = 0.0
         with torch.no_grad():
             for imgs, lbls in val_loader:
-                imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+                imgs, lbls = (
+                    imgs.to(DEVICE, non_blocking=True),
+                    lbls.to(DEVICE, non_blocking=True),
+                )
                 logits, _ = model(imgs)
                 loss = criterion(logits, lbls)
                 val_loss += loss.item() * imgs.size(0)
@@ -435,7 +439,9 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         val_loss /= val_total
         val_acc = val_correct / val_total
         best_val_acc = val_acc
-        print(f"Cargado .pth existente. Computado val_acc={best_val_acc:.4f} → best_val_acc")
+        print(
+            f"Cargado .pth existente. Computado val_acc={best_val_acc:.4f} → best_val_acc"
+        )
 
     if patience_counter >= patience:
         print("El checkpoint ya alcanzó early stopping, no se agregan épocas.")
@@ -446,7 +452,10 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         model.train()
         train_loss = train_correct = train_total = 0.0
         for imgs, lbls in train_loader:
-            imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+            imgs, lbls = (
+                imgs.to(DEVICE, non_blocking=True),
+                lbls.to(DEVICE, non_blocking=True),
+            )
             optimizer.zero_grad()
             logits, _ = model(imgs)
             loss = criterion(logits, lbls)
@@ -462,7 +471,10 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
         val_loss = val_correct = val_total = 0.0
         with torch.no_grad():
             for imgs, lbls in val_loader:
-                imgs, lbls = imgs.to(DEVICE, non_blocking=True), lbls.to(DEVICE, non_blocking=True)
+                imgs, lbls = (
+                    imgs.to(DEVICE, non_blocking=True),
+                    lbls.to(DEVICE, non_blocking=True),
+                )
                 logits, _ = model(imgs)
                 loss = criterion(logits, lbls)
                 val_loss += loss.item() * imgs.size(0)
@@ -480,12 +492,16 @@ def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
             best_tmp = model_pth.with_suffix(model_pth.suffix + ".tmp")
             torch.save(model, best_tmp)
             best_tmp.replace(model_pth)
-            print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-                  f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  [MEJOR — guardado]")
+            print(
+                f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}  [MEJOR — guardado]"
+            )
         else:
             patience_counter += 1
-            print(f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
-                  f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}")
+            print(
+                f"Epoch {epoch:02d}  train_loss={train_loss:.4f} train_acc={train_acc:.4f} | "
+                f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            )
         # Se guarda la última época incluso cuando no mejora la validación.
         checkpoint = {
             "epoch": epoch,
@@ -544,11 +560,19 @@ hist = np.array(history)
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
 axes[0].plot(hist[:, 0], hist[:, 3], label="Val loss")
-axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes[0].grid(alpha=0.3)
+axes[0].set_xlabel("Época")
+axes[0].set_ylabel("Loss")
+axes[0].legend()
+axes[0].grid(alpha=0.3)
 axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
 axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
-axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
-plt.suptitle("Entrenamiento — A"); plt.tight_layout(); plt.show()
+axes[1].set_xlabel("Época")
+axes[1].set_ylabel("Accuracy")
+axes[1].legend()
+axes[1].grid(alpha=0.3)
+plt.suptitle("Entrenamiento — A")
+plt.tight_layout()
+plt.show()
 
 # Tiempo inferencia
 model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
@@ -604,11 +628,19 @@ hist = np.array(history)
 fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 axes[0].plot(hist[:, 0], hist[:, 1], label="Train loss")
 axes[0].plot(hist[:, 0], hist[:, 3], label="Val loss")
-axes[0].set_xlabel("Época"); axes[0].set_ylabel("Loss"); axes[0].legend(); axes[0].grid(alpha=0.3)
+axes[0].set_xlabel("Época")
+axes[0].set_ylabel("Loss")
+axes[0].legend()
+axes[0].grid(alpha=0.3)
 axes[1].plot(hist[:, 0], hist[:, 2], label="Train acc")
 axes[1].plot(hist[:, 0], hist[:, 4], label="Val acc")
-axes[1].set_xlabel("Época"); axes[1].set_ylabel("Accuracy"); axes[1].legend(); axes[1].grid(alpha=0.3)
-plt.suptitle("Entrenamiento — A2"); plt.tight_layout(); plt.show()
+axes[1].set_xlabel("Época")
+axes[1].set_ylabel("Accuracy")
+axes[1].legend()
+axes[1].grid(alpha=0.3)
+plt.suptitle("Entrenamiento — A2")
+plt.tight_layout()
+plt.show()
 
 # Tiempo inferencia
 model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
