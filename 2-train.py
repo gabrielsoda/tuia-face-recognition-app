@@ -805,7 +805,13 @@ print(f"Modelo de reconocimiento: {insight_rec_path} ({insight_size_mb:.1f} MB)"
 # %% [markdown]
 # ## 3.3 Evaluación
 #
-# Mismas métricas, mismos pares, mismo test para ambos modelos.
+# Train, validación y test comparten las mismas 100 identidades, con fotos asignadas a splits distintos. Train contiene 7.000 recortes originales y 7.000 augmented. Validación y test contienen 1.500 recortes cada uno. La auditoría SHA-256 de los 17.000 archivos alineados no encontró hashes compartidos entre splits.
+#
+# En verificación, ambos modelos se comparan con los mismos pares de fotos. Se fija un umbral por modelo con 600 pares positivos y 600 negativos de validación, cerca del punto de igual error (EER). Las decisiones con umbral en test usan ese valor. La ROC de test se calcula barriendo los puntajes.
+#
+# Para la identificación cuantitativa, con semilla 42 se reserva una foto de test para registrar a cada una de 80 personas en la galería. Las fotos restantes de esas personas se usan como consultas conocidas. Todas las fotos de las otras 20 personas se usan como consultas fuera de galería. La demo visual usa una galería de 10 personas con tres fotos por persona.
+#
+# Las 20 personas fuera de la galería también estuvieron en el entrenamiento de la CNN. Para evaluar la generalización a personas nunca vistas por la CNN queda pendiente un test separado con las identidades propuestas Lionel Messi, Cristiano Ronaldo y Mark Zuckerberg.
 
 # %%
 def build_pairs(embeddings, labels, n_pos=800, n_neg=800, rng_seed=42):
