@@ -932,3 +932,218 @@ def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
         "unknown_fa_rate": unknown_fa_rate,
     }
 
+
+# %% [markdown]
+# ### a) Verificación
+
+# %%
+for name, embs, labs in [("CNN custom", test_embs, test_labs),
+                          ("InsightFace", insight_test_embs, insight_test_labs)]:
+    sp, sn, pp, pn = build_pairs(embs, labs)
+    res = evaluate_verification(sp, sn)
+    print(f"\n{name}:")
+    print(f"  AUC       = {res['auc']:.4f}")
+    print(f"  EER       = {res['eer']:.4f}")
+    print(f"  TAR@FAR=1e-2 = {res['tar_far_1e-2']:.4f}")
+    print(f"  TAR@FAR=1e-3 = {res['tar_far_1e-3']:.4f}")
+
+# Histogramas lado a lado
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+for ax, (name, embs, labs) in zip(axes, [("CNN custom", test_embs, test_labs),
+                                            ("InsightFace", insight_test_embs, insight_test_labs)]):
+    sp, sn, _, _ = build_pairs(embs, labs)
+    ax.hist(sp, bins=30, alpha=0.7, label="Misma persona", color="green", edgecolor="darkgreen")
+    ax.hist(sn, bins=30, alpha=0.7, label="Distinta persona", color="red", edgecolor="darkred")
+    ax.set_xlabel("Similitud coseno")
+    ax.set_ylabel("Frecuencia")
+    ax.set_title(name)
+    ax.legend(); ax.grid(alpha=0.2)
+plt.suptitle("Distribución de similitudes — verificación", fontsize=13)
+plt.tight_layout(); plt.show()
+
+# Curvas ROC lado a lado
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+for ax, (name, embs, labs) in zip(axes, [("CNN custom", test_embs, test_labs),
+                                            ("InsightFace", insight_test_embs, insight_test_labs)]):
+    sp, sn, _, _ = build_pairs(embs, labs)
+    res = evaluate_verification(sp, sn)
+    ax.plot(res["fpr"], res["tpr"], lw=2, label=f"AUC={res['auc']:.3f}")
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.3)
+    ax.scatter([res["eer"]], [1 - res["eer"]], color="red", zorder=5, label=f"EER={res['eer']:.3f}")
+    ax.set_xlabel("FPR"); ax.set_ylabel("TPR")
+    ax.set_title(name); ax.legend(); ax.grid(alpha=0.2)
+plt.suptitle("Curvas ROC", fontsize=13)
+plt.tight_layout(); plt.show()
+
+# %% [markdown]
+# ### b) Identificación simple con galería visual
+#
+# - 10 identidades "known" del test (3 imágenes registradas cada una).
+# - 5 queries known: nuevas imágenes de 5 de esas identidades.
+# - 5 queries unknown: imágenes de identidades no registradas.
+# - Usamos el umbral EER (calculado sobre val) para decidir "unknown".
+
+# %%
+def simple_identification_demo(embs, labs, ds, name, thr, seed=42):
+    rng = np.random.default_rng(seed)
+    unique = np.unique(labs)
+    rng.shuffle(unique)
+
+    known_ids = unique[:10]
+    unknown_pool = unique[10:]
+
+    gallery_indices = []
+    gallery_labels = []
+
+    # 3 imágenes por known id para la galería
+    for lab in known_ids:
+        idxs = np.where(labs == lab)[0]
+        if len(idxs) < 4:
+            continue
+        rng.shuffle(idxs)
+        gallery_indices.extend(idxs[:3].tolist())
+        gallery_labels.extend([lab] * 3)
+
+    # 5 queries known (1 imagen extra de 5 ids known)
+    known_query_indices = []
+    known_query_labels = []
+    for lab in known_ids[:5]:
+        idxs = np.where(labs == lab)[0]
+        used = {i for i, g in zip(gallery_indices, gallery_labels) if g == lab}
+        remaining = [i for i in idxs if i not in used]
+        if remaining:
+            known_query_indices.append(remaining[0])
+            known_query_labels.append(lab)
+
+    # 5 queries unknown (1 imagen de 5 ids del unknown_pool)
+    unknown_query_indices = []
+    unknown_query_labels = []
+    for lab in unknown_pool[:5]:
+        idxs = np.where(labs == lab)[0]
+        if len(idxs) > 0:
+            unknown_query_indices.append(idxs[0])
+            unknown_query_labels.append(lab)
+
+    # Promediar embeddings por identidad en la galería
+    gallery_emb_per_id = []
+    gallery_id_per_emb = []
+    for lab in known_ids:
+        gal_idx = [i for i, g in enumerate(gallery_labels) if g == lab]
+        if not gal_idx:
+            continue
+        embs_gal = embs[[gallery_indices[i] for i in gal_idx]]
+        avg_emb = embs_gal.mean(axis=0)
+        avg_emb = avg_emb / np.linalg.norm(avg_emb)
+        gallery_emb_per_id.append(avg_emb)
+        gallery_id_per_emb.append(lab)
+    gallery_emb_arr = np.array(gallery_emb_per_id)
+    gallery_id_arr = np.array(gallery_id_per_emb)
+
+    # Queries
+    all_q_idx = known_query_indices + unknown_query_indices
+    all_q_labels = known_query_labels + unknown_query_labels
+    all_q_is_known = [True] * len(known_query_indices) + [False] * len(unknown_query_indices)
+
+    q_embs = embs[all_q_idx]
+    sims = q_embs @ gallery_emb_arr.T
+    best_sim = sims.max(axis=1)
+    pred_idx = sims.argmax(axis=1)
+    pred_labels = gallery_id_arr[pred_idx]
+    pred_names = [label_encoder.classes_[l] for l in pred_labels]
+
+    # Aplicar umbral: por debajo → unknown
+    for i in range(len(best_sim)):
+        if best_sim[i] < thr:
+            pred_labels[i] = -1
+            pred_names[i] = "unknown"
+
+    # --- Visualizar galería (10 x 3) ---
+    fig, axes = plt.subplots(10, 3, figsize=(9, 24))
+    for row, lab in enumerate(known_ids):
+        gal_idx_row = [i for i, g in enumerate(gallery_labels) if g == lab]
+        for col, gi in enumerate(gal_idx_row[:3]):
+            ax = axes[row, col]
+            img, _ = ds[gallery_indices[gi]]
+            ax.imshow(img.permute(1, 2, 0).numpy())
+            ax.set_title(f"{label_encoder.classes_[lab]}", fontsize=8)
+            ax.axis("off")
+    plt.suptitle(f"Galería registrada — {name} (3 imágenes × 10 identidades)", fontsize=12, y=0.995)
+    plt.tight_layout()
+    plt.show()
+
+    # --- Visualizar 10 queries (2 filas × 5) ---
+    fig, axes = plt.subplots(2, 5, figsize=(15, 6))
+    for i, ax in enumerate(axes.flat):
+        idx = all_q_idx[i]
+        img, _ = ds[idx]
+        true_name = label_encoder.classes_[all_q_labels[i]]
+        pred = pred_names[i]
+        score = best_sim[i]
+        is_ok = (all_q_is_known[i] and pred == true_name) or (not all_q_is_known[i] and pred == "unknown")
+        color = "green" if is_ok else "red"
+        ax.imshow(img.permute(1, 2, 0).numpy())
+        ax.set_title(f"Real: {true_name}\nPred: {pred} ({score:.2f})", fontsize=8, color=color)
+        ax.axis("off")
+    plt.suptitle(f"Consultas — {name} (umbral={thr:.3f})", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+
+    # Reporte textual
+    correct = 0
+    for i in range(len(all_q_idx)):
+        true_name = label_encoder.classes_[all_q_labels[i]]
+        pred = pred_names[i]
+        ok = (all_q_is_known[i] and pred == true_name) or (not all_q_is_known[i] and pred == "unknown")
+        if ok:
+            correct += 1
+    print(f"\n{name} — Resultados identificación simple:")
+    print(f"  Umbral: {thr:.4f}")
+    print(f"  Queries known: {sum(all_q_is_known)} | Queries unknown: {len(all_q_is_known)-sum(all_q_is_known)}")
+    print(f"  Correctos: {correct}/{len(all_q_idx)}")
+    for i in range(len(all_q_idx)):
+        true = label_encoder.classes_[all_q_labels[i]]
+        pred = pred_names[i]
+        ok = (all_q_is_known[i] and pred == true) or (not all_q_is_known[i] and pred == "unknown")
+        mark = "✓" if ok else "✗"
+        print(f"    {mark} Q{i+1}: real={true:20s} | pred={pred:20s} | score={best_sim[i]:.3f}")
+
+
+# Calcular thresholds sobre val y correr demo para ambos modelos
+for name, test_e, test_l, val_e, val_l in [
+    ("CNN custom", test_embs, test_labs, val_embs, val_labs),
+    ("InsightFace", insight_test_embs, insight_test_labs, insight_val_embs, insight_val_labs),
+]:
+    sp, sn, _, _ = build_pairs(val_e, val_l, n_pos=600, n_neg=600, rng_seed=42)
+    thr = evaluate_verification(sp, sn)["eer_thr"]
+    simple_identification_demo(test_e, test_l, test_ds, name, thr)
+
+# %% [markdown]
+# ### c) Elección del umbral con validación
+#
+# Calibramos el umbral `SIMILARITY_THRESHOLD` sobre el split de validación,
+# buscando el punto EER (igual error de falsos positivos y falsos negativos).
+# También reportamos TAR@FAR=1e-2 como referencia.
+
+# %%
+thresholds = {}
+for name, embs, labs in [("CNN custom", val_embs, val_labs),
+                          ("InsightFace", insight_val_embs, insight_val_labs)]:
+    sp, sn, _, _ = build_pairs(embs, labs, n_pos=600, n_neg=600, rng_seed=42)
+    res = evaluate_verification(sp, sn)
+    thresholds[name] = res["eer_thr"]
+    print(f"\n{name} (validación):")
+    print(f"  EER           = {res['eer']:.4f}")
+    print(f"  Umbral (EER)  = {res['eer_thr']:.4f}")
+    print(f"  AUC           = {res['auc']:.4f}")
+    print(f"  TAR@FAR=1e-2  = {res['tar_far_1e-2']:.4f}")
+
+# Evaluamos identificación con threshold en test
+for name, embs, labs in [("CNN custom", test_embs, test_labs),
+                          ("InsightFace", insight_test_embs, insight_test_labs)]:
+    thr = thresholds[name]
+    id_res = evaluate_identification(embs, labs, unknown_frac=0.20, seed=42, thr=thr)
+    print(f"\n{name} — Identificación con umbral={thr:.4f}:")
+    print(f"  Top-1 accuracy (known)   = {id_res['top1_acc']:.4f}")
+    print(f"  Unknown rejection rate   = {id_res['unknown_rejection_rate']:.4f}")
+    print(f"  Unknown false acceptance = {id_res['unknown_fa_rate']:.4f}")
+
