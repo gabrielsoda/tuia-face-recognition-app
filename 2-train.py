@@ -612,9 +612,15 @@ dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
 with torch.no_grad():
     for _ in range(5):
         _ = model.get_embedding(dummy)
+    # Esperar a que termine el calentamiento antes de iniciar el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t0 = time.perf_counter()
     for _ in range(100):
         _ = model.get_embedding(dummy)
+    # Esperar a que terminen las inferencias antes de detener el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t1 = time.perf_counter()
 inf_ms = ((t1 - t0) / 100) * 1000
 
@@ -666,9 +672,15 @@ dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
 with torch.no_grad():
     for _ in range(5):
         _ = model.get_embedding(dummy)
+    # Esperar a que termine el calentamiento antes de iniciar el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t0 = time.perf_counter()
     for _ in range(100):
         _ = model.get_embedding(dummy)
+    # Esperar a que terminen las inferencias antes de detener el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t1 = time.perf_counter()
 inf_ms = ((t1 - t0) / 100) * 1000
 
@@ -720,9 +732,15 @@ dummy = torch.randn(1, 3, FACE_SIZE, FACE_SIZE, device=DEVICE)
 with torch.no_grad():
     for _ in range(5):
         _ = model.get_embedding(dummy)
+    # Esperar a que termine el calentamiento antes de iniciar el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t0 = time.perf_counter()
     for _ in range(100):
         _ = model.get_embedding(dummy)
+    # Esperar a que terminen las inferencias antes de detener el reloj.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize(DEVICE)
     t1 = time.perf_counter()
 inf_ms = ((t1 - t0) / 100) * 1000
 
