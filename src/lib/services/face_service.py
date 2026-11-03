@@ -35,13 +35,42 @@ class FaceService:
         self.similarity_metric = similarity_metric
         self.similarity_threshold = similarity_threshold
         self.face_size = face_size
-        self.model: any = self._load_model(model_path)
         self.output_path = output_path
         self.det_score_threshold = det_score_threshold
         self.det_input_size = det_input_size
         self.min_face_size = min_face_size
         self.align_margin = align_margin
-        self.detector: any = self._load_detector(detector_path)
+        self._last_face_objs: dict = {}
+
+        # ------------------------------------------------------------------
+        # Carga de modelos InsightFace necesita un root path, subimos los .onnx dentro de models/buffalo_l/
+        # ------------------------------------------------------------------
+        self._face_analysis = None
+        is_insightface = (
+            (model_path and "buffalo" in str(model_path).lower())
+            or (detector_path and "buffalo" in str(detector_path).lower())
+        )
+
+        if is_insightface:
+            from insightface.app import FaceAnalysis
+            self._face_analysis = FaceAnalysis(
+                name="buffalo_l",
+                allowed_modules=["detection", "recognition"],
+                root=".",
+            )
+            ctx = 0 if torch.cuda.is_available() else -1
+            det_size = (det_input_size, det_input_size)
+            self._face_analysis.prepare(ctx_id=ctx, det_size=det_size)
+            logger.info(
+                "InsightFace buffalo_l loaded, det_size=%s", det_size
+            )
+
+            # Exponer los modelos internos para consistencia con el resto del service
+            self.model = self._face_analysis.models.get("recognition")
+            self.detector = self._face_analysis.models.get("detection")
+        else:
+            self.model = self._load_model(model_path)
+            self.detector = self._load_detector(detector_path)
 
         os.makedirs(self.output_path, exist_ok=True)
 
