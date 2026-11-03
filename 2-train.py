@@ -6,9 +6,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.1
+#       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv
+#     display_name: .venv (3.12.11)
 #     language: python
 #     name: python3
 # ---
@@ -683,6 +683,14 @@ if torch.cuda.is_available():
 # sintética, después de 5 de calentamiento, en el dispositivo indicado.
 # Incluye get_embedding; no incluye lectura, detección, alineación ni transferencia
 # desde CPU. La medición en GPU no sustituye la evaluación de costo en CPU.
+#
+# | CNN | Mejor validación v1 | Mejor validación v2 | Diferencia | Mejor época v2 |
+# | --- | ---: | ---: | ---: | ---: |
+# | A | 52,20 % | 67,13 % | +14,93 pp | 62 |
+# | A2 | 33,47 % | 52,20 % | +18,73 pp | 34 |
+#
+# V2 incorporó weight decay y separó el embedding normalizado del forward de clasificación. A2 también cambió a bloques residuales bottleneck. La comparación mide el efecto conjunto de los cambios. A y A2 terminaron en las épocas 69 y 41. En la mejor época de cada modelo, la accuracy de train fue 90,99 % y 76,44 %, respectivamente. La brecha con validación indica sobreajuste en ambos. A fue la CNN elegida para el análisis detallado.
+#
 
 # %%
 print("\n" + "=" * 70)
