@@ -376,8 +376,10 @@ if CKPT_PATH.exists():
     history = ckpt["history"]
     print(f"Restaurado desde checkpoint: epoch {start_epoch - 1}, best_val_acc={best_val_acc:.4f}")
 elif MODEL_PTH.exists():
-    # Fallback: solo tenemos el .pth del modelo completo
-    model = torch.load(MODEL_PTH, map_location=DEVICE, weights_only=False)
+    # Cargar pesos sin reemplazar el modelo asociado al optimizador.
+    saved_model = torch.load(MODEL_PTH, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(saved_model.state_dict())
+    del saved_model
     model.eval()
     val_loss = val_correct = val_total = 0.0
     with torch.no_grad():
