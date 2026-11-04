@@ -1192,7 +1192,7 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
         {
             "x": emb2d[:, 0],
             "y": emb2d[:, 1],
-            "identity": labs.astype(str).tolist(),
+            "identity": label_encoder.inverse_transform(labs).tolist(),
             "kmeans_label": kmeans_labels.astype(int).tolist(),
         }
     )
