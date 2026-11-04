@@ -1280,6 +1280,8 @@ print(
 # Extraemos embeddings ArcFace del conjunto balanceado. Usamos **t-SNE** para visualizar en 2D qué imágenes quedan próximas en el espacio de embeddings y así localizar ejemplos para inspección manual, como puntos aislados o vecindarios con etiquetas mezcladas. Proyectamos una muestra aleatoria de hasta 2.000 embeddings para acotar el costo y mantener legible la grilla, con semilla 42, perplejidad 30 e inicialización PCA. Interpretamos las vecindades locales y evitamos atribuir significado a la distancia entre grupos en el plano. [Van der Maaten y Hinton, 2008](https://jmlr.org/papers/v9/vandermaaten08a.html)
 #
 # Por separado, ajustamos K-Means sobre todos los embeddings disponibles en su espacio original y comparamos sus asignaciones con las etiquetas de identidad mediante ARI y NMI. Silhouette mide la separación y cohesión de esos clusters en el mismo espacio.
+#
+# La salida guardada de la extracción de embeddings de ArcFace corresponde a una ejecución en GPU. El código usa CPU por defecto para poder ejecutarse sin CUDA.
 
 # %%
 from sklearn.cluster import KMeans
