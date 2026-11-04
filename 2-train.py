@@ -370,15 +370,19 @@ print(f"Número de clases: {NUM_CLASSES}")
 
 
 # %% [markdown]
-# **Modelos Custom:**
-# Vamos a probar dos variantes:
-# - **A:** CNN custom con bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
+# **Modelos Custom**
+#
+# Vamos a probar dos arquitecturas simples:
+# - **A:** CNN custom con 3 bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
 #   Liviana y rápida.
 # - **A2:** ResNet con *bottlenecks* (1×1 → 3×3 → 1×1) + *skip connections*.
 #   Permite entrenar más profundo sin desvanecimiento de gradientes.
 #
-# - **Global Average Pooling**, **Dropout**, **BatchNorm** en embedding y
-#   **L2-normalización** son comunes a ambas variantes.
+# Para ambas variantes usamos:
+# - **Global Average Pooling** Para generar el embedding de 128 dimensiones a partir de la última capa convolucional
+# - **Dropout** Para regularizar y evitar sobreajuste
+# - **BatchNorm** Para suavizar yestabilizar el entrenamiento
+# - **L2-normalización** Para asegurar que los embeddings tengan magnitud unitaria y facilitar la comparación mediante métricas de similitud.
 
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
@@ -1398,6 +1402,11 @@ with pl.Config(tbl_rows=-1):
     display(pl.DataFrame(comp_data))
 
 # %% [markdown]
-# Elegimos ArcFace para la aplicación por su desempeño en identificación.
-# La CNN ganadora ofrece un modelo de menor tamaño. Los tiempos se interpretan
-# junto con el dispositivo indicado en la tabla.
+# Nuestra elección para la app es quedarnos con ArcFace, es un estándar difícil de superar. Si bien nuestro modelo custom es mucho más liviano (~300x) y más rápido (~56x), la abismal diferencia de parámetros (~360x más en ArcFace vs nuestro modelo A) y la complejidad de la arquitectura de ArcFace le permite generalizar mucho mejor, obteniendo métricas prácticamente perfectas.
+#
+# Además de la arquitectura, la gran ventaja de ArcFace es que fue entrenado con millones de imágenes y utilizando metric learning frente a nuestro modelo A rudimentario entrenado usando softmax/cross-entropy con un dataset muy pequeño.
+#
+# %% [markdown]
+# ### Licencia de los modelos preentrenados
+#
+# En cuanto a licencia, ArcFace es de uso no comercial / investigación, como esto es un proyecto académico no representa un problema.
