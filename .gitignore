@@ -13,3 +13,8 @@ data/*
 .DS_Store
 src/output/*
 !src/output/.gitkeep
+*.ipynb
+!/1-pre-processing.ipynb
+models/*.pt
+models/*.tmp
+models/experimento_v2/

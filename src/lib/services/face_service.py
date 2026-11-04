@@ -12,6 +12,7 @@ from lib.schemas import EmbeddingRecord, FaceDetection, PredictResult, AlignedFa
 from lib.storage.base import EmbeddingStoreProtocol
 import os 
 import logging
+from insightface.app import FaceAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,29 @@ class FaceService:
         self.similarity_metric = similarity_metric
         self.similarity_threshold = similarity_threshold
         self.face_size = face_size
-        self.model: any = self._load_model(model_path)
         self.output_path = output_path
         self.det_score_threshold = det_score_threshold
         self.det_input_size = det_input_size
         self.min_face_size = min_face_size
         self.align_margin = align_margin
-        self.detector: any = self._load_detector(detector_path)
+        self._last_face_objs: dict = {}
 
-        os.makedirs(self.output_path, exist_ok=True)
+        # ------------------------------------------------------------------
+        # Usar modelos de InsightFace (buffalo_l) directamente
+        # ------------------------------------------------------------------
+        self._face_analysis = FaceAnalysis(
+                        name="buffalo_l",
+                        allowed_modules=["detection", "recognition"],
+                    )
+        ctx = 0 if torch.cuda.is_available() else -1
+        det_size = (det_input_size, det_input_size)
+        self._face_analysis.prepare(ctx_id=ctx, det_size=det_size)
+        logger.info(
+            "InsightFace buffalo_l loaded, det_size=%s", det_size
+        )
+
+        self.model = self._face_analysis.models.get("recognition")
+        self.detector = self._face_analysis.models.get("detection")
 
     @staticmethod
     def _clip_xyxy(
@@ -110,27 +125,94 @@ class FaceService:
     
     def detect_faces(self, image: np.ndarray) -> list[tuple[int, int, int, int]]:
         """
-        Each box is (x1, y1, x2, y2) in pixels (InsightFace convention).
-        Return a list of tuples with the coordinates of the faces detected in the image.
+        Detecta rostros con InsightFace FaceAnalysis.
+        Cada caja es (x1, y1, x2, y2) en píxeles enteros.
+        Filtra por score de detección y tamaño mínimo.
         """
-        raise NotImplementedError("Not implemented")
+        if self._face_analysis is None:
+            raise NotImplementedError("No hay detector configurado")
 
+        faces = self._face_analysis.get(image)
+        self._last_face_objs: dict[tuple[int, int, int, int], any] = {}
+        result: list[tuple[int, int, int, int]] = []
+        for face in faces:
+            if face.det_score < self.det_score_threshold:
+                continue
+            x1, y1, x2, y2 = map(int, face.bbox)
+            h = y2 - y1
+            w = x2 - x1
+            if min(h, w) < self.min_face_size:
+                continue
+            x1, y1, x2, y2 = self._clip_xyxy(
+                x1, y1, x2, y2, image.shape[0], image.shape[1]
+            )
+            clipped_box = (x1, y1, x2, y2)
+            self._last_face_objs[clipped_box] = face
+            result.append(clipped_box)
+        return result
 
     def align_face(
         self, image: np.ndarray, box: tuple[int, int, int, int]
     ) -> AlignedFace:
         """
-        Crop using box (x1, y1, x2, y2) and run FaceAnalysis on the crop.
-        Return an AlignedFace object.
+        Alinea el rostro usando los 5 landmarks de InsightFace y norm_crop.
+        Guarda keypoints relativos a la esquina superior izquierda de la caja.
+        El embedding se precalcula durante get() y se reutiliza.
         """
-        raise NotImplementedError("Not implemented")
+        if self._face_analysis is None:
+            raise NotImplementedError("No hay detector/alineador configurado")
+
+        # Buscar la detección cacheada que coincida con la caja
+        face_obj = self._last_face_objs.get(box)
+
+        # Fallback: detectar de nuevo si no está en cache
+        if face_obj is None:
+            faces = self._face_analysis.get(image)
+            for face in faces:
+                fx1, fy1, fx2, fy2 = map(int, face.bbox)
+                fx1, fy1, fx2, fy2 = self._clip_xyxy(
+                    fx1, fy1, fx2, fy2, image.shape[0], image.shape[1]
+                )
+                if (fx1, fy1, fx2, fy2) == box:
+                    face_obj = face
+                    break
+            if face_obj is None:
+                raise ValueError("No se encontró la detección correspondiente a la caja")
+
+        from insightface.utils.face_align import norm_crop
+
+        aligned_img = norm_crop(
+            image, face_obj.kps, image_size=self.face_size, mode="arcface"
+        )
+
+        # Keypoints relativos a la esquina superior izquierda de la caja
+        kps_rel = face_obj.kps - np.array([box[0], box[1]], dtype=np.float32)
+
+        # Embedding ya calculado por FaceAnalysis; normalizamos L2 por seguridad
+        emb = face_obj.embedding.flatten().astype(np.float32)
+        emb_norm = np.linalg.norm(emb)
+        if emb_norm > 0:
+            emb = emb / emb_norm
+
+        return AlignedFace(
+            bbox=box,
+            keypoints=kps_rel,
+            image=aligned_img,
+            embedding=emb.astype(float).tolist(),
+        )
 
     def extract_embedding_from_face(self, face: AlignedFace) -> list[float]:
         """
-        Extract embedding from face.
-        Return a list of floats representing the embedding of the face.
+        Devuelve el embedding precalculado durante la alineación.
+        Re-normaliza L2 antes de devolverlo.
         """
-        raise NotImplementedError("Not implemented")
+        if face.embedding is None:
+            raise ValueError("AlignedFace no tiene embedding precalculado")
+        emb = np.asarray(face.embedding, dtype=np.float32)
+        emb_norm = np.linalg.norm(emb)
+        if emb_norm > 0:
+            emb = emb / emb_norm
+        return emb.astype(float).tolist()
         
     def _cosine(self, a: np.ndarray, b: np.ndarray) -> float:
         denom = np.linalg.norm(a) * np.linalg.norm(b)
