@@ -966,10 +966,14 @@ def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
 # ### a) Verificación
 
 # %%
+eval_results = {}
+test_scores = {}
 for name, embs, labs in [("CNN custom", test_embs, test_labs),
                           ("InsightFace", insight_test_embs, insight_test_labs)]:
-    sp, sn, pp, pn = build_pairs(embs, labs)
+    sp, sn, _, _ = build_pairs(embs, labs)
+    test_scores[name] = sp, sn
     res = evaluate_verification(sp, sn)
+    eval_results[name] = {"verification": res}
     print(f"\n{name}:")
     print(f"  AUC       = {res['auc']:.4f}")
     print(f"  EER       = {res['eer']:.4f}")
@@ -978,9 +982,7 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 
 # Histogramas lado a lado
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-for ax, (name, embs, labs) in zip(axes, [("CNN custom", test_embs, test_labs),
-                                            ("InsightFace", insight_test_embs, insight_test_labs)]):
-    sp, sn, _, _ = build_pairs(embs, labs)
+for ax, (name, (sp, sn)) in zip(axes, test_scores.items()):
     ax.hist(sp, bins=30, alpha=0.7, label="Misma persona", color="green", edgecolor="darkgreen")
     ax.hist(sn, bins=30, alpha=0.7, label="Distinta persona", color="red", edgecolor="darkred")
     ax.set_xlabel("Similitud coseno")
@@ -992,10 +994,8 @@ plt.tight_layout(); plt.show()
 
 # Curvas ROC lado a lado
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-for ax, (name, embs, labs) in zip(axes, [("CNN custom", test_embs, test_labs),
-                                            ("InsightFace", insight_test_embs, insight_test_labs)]):
-    sp, sn, _, _ = build_pairs(embs, labs)
-    res = evaluate_verification(sp, sn)
+for ax, (name, result) in zip(axes, eval_results.items()):
+    res = result["verification"]
     ax.plot(res["fpr"], res["tpr"], lw=2, label=f"AUC={res['auc']:.3f}")
     ax.plot([0, 1], [0, 1], "k--", alpha=0.3)
     ax.scatter([res["eer"]], [1 - res["eer"]], color="red", zorder=5, label=f"EER={res['eer']:.3f}")
@@ -1160,6 +1160,7 @@ for name, embs, labs in [("CNN custom", val_embs, val_labs),
     sp, sn, _, _ = build_pairs(embs, labs, n_pos=600, n_neg=600, rng_seed=42)
     res = evaluate_verification(sp, sn)
     thresholds[name] = res["eer_thr"]
+    eval_results[name]["threshold"] = thresholds[name]
     print(f"\n{name} (validación):")
     print(f"  EER           = {res['eer']:.4f}")
     print(f"  Umbral (EER)  = {res['eer_thr']:.4f}")
@@ -1171,6 +1172,7 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
                           ("InsightFace", insight_test_embs, insight_test_labs)]:
     thr = thresholds[name]
     id_res = evaluate_identification(embs, labs, unknown_frac=0.20, seed=42, thr=thr)
+    eval_results[name]["identification"] = id_res
     print(f"\n{name} — Identificación con umbral={thr:.4f}:")
     print(f"  Top-1 accuracy (known)   = {id_res['top1_acc']:.4f}")
     print(f"  Unknown rejection rate   = {id_res['unknown_rejection_rate']:.4f}")
@@ -1181,20 +1183,11 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 #
 # Proyección t-SNE y métricas de clustering (silhouette, ARI, NMI con K-Means)
 # para evaluar qué modelo separa mejor las identidades en el espacio de embeddings.
+# Silhouette usa las identidades reales. ARI y NMI comparan esas identidades
+# con las asignaciones de K-Means. Las métricas usan los embeddings originales.
 
 # %%
 from sklearn.decomposition import PCA
-
-
-def cluster_metrics(embs, labels):
-    n_clusters = len(np.unique(labels))
-    km = KMeans(n_clusters=n_clusters, random_state=SEED, n_init=10)
-    pred = km.fit_predict(embs)
-    return {
-        "silhouette": silhouette_score(embs, labels),
-        "ari": adjusted_rand_score(labels, pred),
-        "nmi": normalized_mutual_info_score(labels, pred),
-    }
 
 
 tsne_plots = []
@@ -1207,17 +1200,15 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
     tsne = TSNE(n_components=2, random_state=SEED, init="pca", learning_rate="auto")
     emb2d = tsne.fit_transform(embs_pca)
 
-    metrics = cluster_metrics(embs, labs)
-    metrics_rows.append({
-        "modelo": name,
-        "silhouette": round(metrics["silhouette"], 3),
-        "ari": round(metrics["ari"], 3),
-        "nmi": round(metrics["nmi"], 3),
-    })
-
-    n_clusters = len(np.unique(labs))
-    km = KMeans(n_clusters=n_clusters, random_state=SEED, n_init=10)
+    km = KMeans(n_clusters=len(np.unique(labs)), random_state=SEED, n_init=10)
     kmeans_labels = km.fit_predict(embs)
+    clustering = {
+        "silhouette": silhouette_score(embs, labs),
+        "ari": adjusted_rand_score(labs, kmeans_labels),
+        "nmi": normalized_mutual_info_score(labs, kmeans_labels),
+    }
+    eval_results[name]["clustering"] = clustering
+    metrics_rows.append({"modelo": name, **{k: round(v, 3) for k, v in clustering.items()}})
 
     tsne_data = pl.DataFrame(
         {
@@ -1304,84 +1295,59 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 # ### f) Costo computacional
 
 # %%
-# Cargamos el mejor custom para reportar tamaño y parámetros
-best_custom = torch.load(MODEL_PTH, map_location="cpu", weights_only=False)
-best_custom.eval()
-custom_params = sum(p.numel() for p in best_custom.parameters() if p.requires_grad)
-custom_size_mb = MODEL_PTH.stat().st_size / (1024 * 1024) if MODEL_PTH.exists() else 0.0
-
-cost_df = pl.DataFrame({
-    "modelo": [f"CNN Custom ({best_exp})", "InsightFace (buffalo_l)"],
-    "params_M": [round(custom_params / 1e6, 2), 43.6],
-    "emb_dim": [128, 512],
-    "inf_ms": [round(results[best_exp]["inf_ms"], 2), round(insight_inf_ms, 2)],
-    "size_MB": [round(custom_size_mb, 2), round(insight_size_mb, 2) if insight_size_mb else "N/A"],
-})
+eval_results["CNN custom"]["cost"] = {
+    "params_M": results[best_exp]["n_params"] / 1e6,
+    "emb_dim": test_embs.shape[1],
+    "inf_ms": results[best_exp]["inf_ms"],
+    "runtime": f"PyTorch ({DEVICE})",
+    "size_MiB": results[best_exp]["pth_size_mb"],
+}
+eval_results["InsightFace"]["cost"] = {
+    "params_M": 43.6,
+    "emb_dim": insight_test_embs.shape[1],
+    "inf_ms": insight_inf_ms,
+    "runtime": recognition_model.session.get_providers()[0],
+    "size_MiB": insight_size_mb,
+}
+cost_df = pl.DataFrame([
+    {"modelo": name, **result["cost"]} for name, result in eval_results.items()
+])
 display(cost_df)
 
 # %% [markdown]
 # ## 3.4 Comparación y elección final
+#
+# Comparamos la CNN elegida por accuracy de validación con ArcFace. La latencia
+# corresponde al extractor y se informa junto con el dispositivo de cada medición.
 
 # %%
-# Recolectamos métricas de verificación e identificación sobre test
-metrics = {}
-
-# Custom CNNs: recalculamos embeddings de test para incluir todos los experimentos
-for exp_key in results:
-    model_pth = Path(results[exp_key]["model_pth"])
-    model = torch.load(model_pth, map_location=DEVICE, weights_only=False)
-    model.eval().to(DEVICE)
-    val_e, val_l = extract_embeddings(val_loader, model, DEVICE)
-    test_e, test_l = extract_embeddings(test_loader, model, DEVICE)
-    del model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    sp, sn, _, _ = build_pairs(val_e, val_l, n_pos=600, n_neg=600, rng_seed=42)
-    thr = evaluate_verification(sp, sn)["eer_thr"]
-
-    sp_t, sn_t, _, _ = build_pairs(test_e, test_l, n_pos=800, n_neg=800, rng_seed=42)
-    verif = evaluate_verification(sp_t, sn_t)
-    ident = evaluate_identification(test_e, test_l, unknown_frac=0.20, seed=42, thr=thr)
-    name = f"CNN {exp_key}"
-    metrics[name] = {
-        "AUC": verif["auc"],
-        "EER": verif["eer"],
-        "TAR@FAR=1e-2": verif["tar_far_1e-2"],
-        "TAR@FAR=1e-3": verif["tar_far_1e-3"],
-        "Top-1": ident["top1_acc"],
-        "Top-5": ident["top5_acc"],
-        "F1_macro": ident["f1_macro"],
-    }
-
-# InsightFace (ya calculado previamente)
-sp, sn, _, _ = build_pairs(insight_test_embs, insight_test_labs, n_pos=800, n_neg=800, rng_seed=42)
-verif = evaluate_verification(sp, sn)
-sp_v, sn_v, _, _ = build_pairs(insight_val_embs, insight_val_labs, n_pos=600, n_neg=600, rng_seed=42)
-thr = evaluate_verification(sp_v, sn_v)["eer_thr"]
-ident = evaluate_identification(insight_test_embs, insight_test_labs, unknown_frac=0.20, seed=42, thr=thr)
-metrics["InsightFace"] = {
-    "AUC": verif["auc"],
-    "EER": verif["eer"],
-    "TAR@FAR=1e-2": verif["tar_far_1e-2"],
-    "TAR@FAR=1e-3": verif["tar_far_1e-3"],
-    "Top-1": ident["top1_acc"],
-    "Top-5": ident["top5_acc"],
-    "F1_macro": ident["f1_macro"],
-}
-
-comp_data = {
-    "Métrica": ["AUC", "EER", "TAR@FAR=1e-2", "TAR@FAR=1e-3",
-                "Top-1 accuracy", "Top-5 accuracy", "F1 macro"],
-}
-metric_keys = ["AUC", "EER", "TAR@FAR=1e-2", "TAR@FAR=1e-3", "Top-1", "Top-5", "F1_macro"]
-for name in metrics:
-    comp_data[name] = [f"{metrics[name][k]:.4f}" for k in metric_keys]
-comp_df = pl.DataFrame(comp_data)
-display(comp_df)
-
+metric_rows = [
+    ("AUC (test)", "verification", "auc", ".4f"),
+    ("EER (test)", "verification", "eer", ".4f"),
+    ("TAR@FAR=1e-2", "verification", "tar_far_1e-2", ".4f"),
+    ("TAR@FAR=1e-3", "verification", "tar_far_1e-3", ".4f"),
+    ("Top-1 con umbral", "identification", "top1_acc", ".4f"),
+    ("Top-5 sin umbral", "identification", "top5_acc", ".4f"),
+    ("F1 macro", "identification", "f1_macro", ".4f"),
+    ("Rechazo fuera de galería", "identification", "unknown_rejection_rate", ".4f"),
+    ("Silhouette (identidades)", "clustering", "silhouette", ".3f"),
+    ("ARI (K-Means)", "clustering", "ari", ".3f"),
+    ("NMI (K-Means)", "clustering", "nmi", ".3f"),
+    ("Parámetros (millones)", "cost", "params_M", ".2f"),
+    ("Dimensión del embedding", "cost", "emb_dim", "d"),
+    ("Tamaño (MiB)", "cost", "size_MiB", ".2f"),
+    ("Latencia (ms/rostro)", "cost", "inf_ms", ".2f"),
+    ("Entorno de inferencia", "cost", "runtime", "s"),
+]
+comp_data = {"Métrica": [label for label, *_ in metric_rows]}
+for name, result in eval_results.items():
+    label = f"CNN {best_exp}" if name == "CNN custom" else "ArcFace"
+    comp_data[label] = [
+        format(result[section][key], fmt) for _, section, key, fmt in metric_rows
+    ]
+display(pl.DataFrame(comp_data))
 
 # %% [markdown]
-# Nuestra elección es quedarnos con ArcFace, es un estándar dificil de superar. Si bien nuestro modelo custom es mucho más liviano (~300x) y más rápido (~56x), la abismal diferencia de parametros (~360x más en ArcFace vs nuestro modelo A) y la complejidad de la arquitectura de ArcFace le permite generalizar mucho mejor, obteniendo un accuracy de 0.99 sobre el conjunto de validación y 0.98 sobre el conjunto de test.
-#
-# Además de la arquitectura, la gran ventaja de ArcFace es que fue entrenado con millones de imágenes y utilizando metric learning frente a nuestro modelo A rudimentario entrenado usando softmax/cross-entropy con un dataset muy pequeño.
+# Elegimos ArcFace para la aplicación por su desempeño en identificación.
+# La CNN ganadora ofrece un modelo de menor tamaño. Los tiempos se interpretan
+# junto con el dispositivo indicado en la tabla.
