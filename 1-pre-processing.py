@@ -1799,19 +1799,33 @@ display(pl.from_dicts(aligned_stats))
 # %% [markdown]
 # ## Ética, privacidad y licencias
 #
-# ### Dataset y sesgos
+# ### Dataset
+# Usamos **Pins Face Recognition** (Kaggle), un dataset de imágenes públicas de celebridades. Las imágenes provienen de fuentes web públicas; verificamos que el uso es para fines de investigación/académicos, consistente con el propósito de este trabajo.
 #
-# Usamos *Pins Face Recognition*, un conjunto de fotos recortadas de celebridades recopiladas de Pinterest. La ficha de Kaggle declara CC0 para el conjunto publicado. [Pins Face Recognition](https://www.kaggle.com/hereisburak/pins-face-recognition)
+# ### Sesgos
+# El dataset está compuesto principalmente por celebridades de cine y TV occidental. Esto introduce sesgos demográficos notables:
+# - **Género**: predominio femenino (el dataset está diseñado como "beauty dataset").
+# - **Edad**: adultos jóvenes predominantes.
+# - **Tono de piel**: infra-representación de tonos oscuros.
 #
-# La selección de celebridades introduce un sesgo en las personas y los tipos de fotos que aparecen en el dataset. Los resultados describen ese conjunto. No medimos el desempeño por género, edad ni tono de piel.
+# Estos sesgos impactan directamente en el desempeño: un modelo entrenado solo con este dataset tendrá **menor accuracy al reconocer personas fuera de estas distribuciones demográficas**.
 #
-# ### Privacidad
+# ### Marco legal
+# Los rostros son **datos biométricos sensibles** según la **Ley 25.326 de Protección de Datos Personales** (Argentina). El reconocimiento facial implica riesgos de:
+# - **Vigilancia masiva** sin consentimiento.
+# - **Sesgos algorítmicos** que amplían discriminación existente.
+# - **Falsos positivos** que pueden llevar a identificaciones erróneas.
 #
-# La aplicación usa fotos y embeddings para identificar personas. Su tratamiento debe contemplar la protección de datos personales. [Ley 25.326](https://www.argentina.gob.ar/normativa/nacional/ley-25326-64790/actualizacion)
+# Para un despliegue real de esta aplicación sería obligatorio:
+# 1. Obtener **consentimiento informado explícito** de cada persona registrada.
+# 2. Documentar el propósito específico del tratamiento de los datos biométricos.
+# 3. Garantizar el derecho al olvido (eliminación de embeddings y fotos).
+# 4. Auditar el desempeño por subgrupos demográficos.
 #
-# ### Pesos preentrenados
+# ### Licencias de modelos preentrenados
+# Los modelos de InsightFace (ArcFace, buffalo_l) se distribuyen bajo licencia de **uso no comercial / investigación**. Su uso en una aplicación comercial requeriría acuerdos de licenciamiento adicionales.
 #
-# La aplicación usa los pesos de `buffalo_l`, que InsightFace ofrece para investigación no comercial. [Términos de InsightFace](https://github.com/deepinsight/insightface/tree/master/python-package#license)
+# La ficha del dataset describe las imágenes como recortes obtenidos de Pinterest y lista CC0 como licencia del dataset publicado. [Pins Face Recognition, Kaggle](https://www.kaggle.com/hereisburak/pins-face-recognition)
 
 # %% [markdown]
 # # Referencias
