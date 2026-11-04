@@ -795,17 +795,6 @@ print(f"Norma L2 promedio: {np.linalg.norm(insight_val_embs, axis=1).mean():.4f}
 
                                                                                                                                     
 # --- Métricas de costo para InsightFace (usadas en sección 3.3 f) ---                                                               
-# Tiempo de inferencia                                                                                                               
-dummy_bgr = np.random.randint(0, 255, (FACE_SIZE, FACE_SIZE, 3), dtype=np.uint8)                                                     
-for _ in range(5):                                                                                                                   
-    _ = recognition_model.get_feat(dummy_bgr)                                                                                        
-t0 = time.perf_counter()                                                                                                             
-for _ in range(100):                                                                                                                 
-    _ = recognition_model.get_feat(dummy_bgr)                                                                                        
-t1 = time.perf_counter()                                                                                                             
-insight_inf_ms = ((t1 - t0) / 100) * 1000                                                                                            
-print(f"Tiempo medio inferencia InsightFace: {insight_inf_ms:.2f} ms/rostro")                                                        
-                                                                                                                                    
 # Ruta y tamaño del modelo .onnx                                                                                                     
 insight_model_dir = Path.home() / ".insightface" / "models" / "buffalo_l"                                                            
 insight_rec_path = insight_model_dir / "w600k_r50.onnx"                                                                              
@@ -1293,20 +1282,60 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 
 # %% [markdown]
 # ### f) Costo computacional
+#
+# Medimos el extractor en CPU con cuatro hilos por runtime, una cara sintética
+# por pasada, cinco pasadas de calentamiento y cien cronometradas. La medición
+# excluye carga de pesos, lectura, detección y alineación.
 
 # %%
+import onnxruntime as ort
+from insightface.model_zoo.arcface_onnx import ArcFaceONNX
+
+
+def mean_inference_ms(infer):
+    for _ in range(5):
+        infer()
+    start = time.perf_counter()
+    for _ in range(100):
+        infer()
+    return (time.perf_counter() - start) * 1000 / 100
+
+
+cpu_threads = 4
+cnn_cpu = torch.load(MODEL_PTH, map_location="cpu", weights_only=False).eval()
+dummy_rgb = torch.zeros(1, 3, FACE_SIZE, FACE_SIZE, device="cpu")
+previous_threads = torch.get_num_threads()
+torch.set_num_threads(cpu_threads)
+try:
+    with torch.inference_mode():
+        cnn_cpu_ms = mean_inference_ms(lambda: cnn_cpu.get_embedding(dummy_rgb))
+finally:
+    torch.set_num_threads(previous_threads)
+
+session_options = ort.SessionOptions()
+session_options.intra_op_num_threads = cpu_threads
+arcface_session = ort.InferenceSession(
+    recognition_model.model_file,
+    sess_options=session_options,
+    providers=["CPUExecutionProvider"],
+)
+arcface_cpu = ArcFaceONNX(recognition_model.model_file, session=arcface_session)
+dummy_bgr = np.zeros((FACE_SIZE, FACE_SIZE, 3), dtype=np.uint8)
+arcface_cpu_ms = mean_inference_ms(lambda: arcface_cpu.get_feat(dummy_bgr))
+del cnn_cpu, arcface_cpu, arcface_session
+
 eval_results["CNN custom"]["cost"] = {
     "params_M": results[best_exp]["n_params"] / 1e6,
     "emb_dim": test_embs.shape[1],
-    "inf_ms": results[best_exp]["inf_ms"],
-    "runtime": f"PyTorch ({DEVICE})",
+    "inf_ms": cnn_cpu_ms,
+    "runtime": f"PyTorch (CPU, {cpu_threads} hilos)",
     "size_MiB": results[best_exp]["pth_size_mb"],
 }
 eval_results["InsightFace"]["cost"] = {
     "params_M": 43.6,
     "emb_dim": insight_test_embs.shape[1],
-    "inf_ms": insight_inf_ms,
-    "runtime": recognition_model.session.get_providers()[0],
+    "inf_ms": arcface_cpu_ms,
+    "runtime": f"ONNX Runtime (CPU, {cpu_threads} hilos)",
     "size_MiB": insight_size_mb,
 }
 cost_df = pl.DataFrame([
@@ -1336,7 +1365,7 @@ metric_rows = [
     ("Parámetros (millones)", "cost", "params_M", ".2f"),
     ("Dimensión del embedding", "cost", "emb_dim", "d"),
     ("Tamaño (MiB)", "cost", "size_MiB", ".2f"),
-    ("Latencia (ms/rostro)", "cost", "inf_ms", ".2f"),
+    ("Latencia CPU (ms/rostro)", "cost", "inf_ms", ".2f"),
     ("Entorno de inferencia", "cost", "runtime", "s"),
 ]
 comp_data = {"Métrica": [label for label, *_ in metric_rows]}
