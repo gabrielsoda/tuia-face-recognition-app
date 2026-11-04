@@ -221,6 +221,9 @@ bottom_chart = (
 
 display(top_chart | bottom_chart)
 
+# %% [markdown]
+# **Cantidad de fotos por identidad.** El histograma muestra que la mitad central de las 105 identidades tiene entre 141 y 192 fotos. Los extremos son 86 y 237, casi tres veces de diferencia. Usar todas las fotos daría más ejemplos a algunas personas durante el entrenamiento. Por eso fijamos un objetivo de 100 fotos aceptadas por identidad. Antes de correr la detección, el mínimo de 100 deja fuera a tres identidades y evita procesar 279 fotos que no alcanzan ese objetivo.
+
 # %%
 # Resoluciones y relación de aspecto (EDA — sin filtrar)
 res_stats = readable.select(
@@ -264,6 +267,9 @@ res_chart = (
 )
 display(res_chart)
 
+# %% [markdown]
+# **Resolución de origen.** Las medianas de ancho y alto son 175 y 185 px. Hay imágenes con lados de 80 y 82 px y otras que llegan a 564 px de ancho o 802 px de alto. El mapa muestra el tamaño de la foto completa. Para decidir si el recorte tendrá detalle suficiente medimos después el lado menor de la caja del rostro. Descartamos cajas de menos de 56 px, lo que limita cuánto hay que ampliar el rostro para generar un recorte de 112 × 112.
+
 # %%
 # Muestra visual por identidad (pose, expresión, oclusiones)
 N_IDENTITIES = 5
@@ -293,6 +299,9 @@ for i, ident in enumerate(sample_idents):
 fig.suptitle("Muestra visual por identidad — pose, expresión, oclusiones", fontsize=12)
 plt.tight_layout()
 plt.show()
+
+# %% [markdown]
+# **Variación dentro de una identidad.** En la grilla hay tomas frontales y de tres cuartos, expresiones neutras y sonrisas, fotos en color y en blanco y negro, y accesorios como gorros y gorras. También cambia cuánto espacio ocupa la cara. Alinear con cinco puntos faciales reduce diferencias de posición, escala e inclinación en el plano. Conservamos la variación de apariencia de las fotos que pasan los filtros.
 
 # %% [markdown]
 # ## Variaciones fotométricas
@@ -368,6 +377,9 @@ for ax in axes.flat[len(extremes) :]:
 
 fig.suptitle("Casos extremos de iluminación y contraste", fontsize=12)
 plt.show()
+
+# %% [markdown]
+# **Brillo y contraste.** Las medianas son 112 y 60,7 en escala de grises de 0 a 255. En los extremos se ven rostros en sombra, retratos muy iluminados y fondos claros que influyen en las estadísticas globales. En varios ejemplos extremos todavía se distinguen los rasgos. Usamos estos valores para inspección visual y dejamos la aceptación en manos de las reglas de detección, tamaño y revisión manual. En el aumento de train incluimos cambios moderados de brillo y contraste para representar parte de esa variación.
 
 # %% [markdown]
 # ## Control de calidad y limpieza
@@ -465,11 +477,6 @@ fig.suptitle("Imágenes con menor lado mínimo")
 plt.tight_layout()
 plt.show()
 
-# %% [markdown]
-# Preguntas abiertas luego de esta exploración de imágenes pequeñas:
-#
-# - El detector encuentra estas caras? comprobar graficando boxes, scores y landmarks.
-# - ayudan a entrenar el reconocedor? implica comparar entrenamientos -> ablación, quitar un componente y observar qué cambia.
 
 # %% [markdown]
 # ## Calibración del umbral de detección
