@@ -1804,7 +1804,6 @@ display(pl.from_dicts(aligned_stats))
 #
 # ### Sesgos
 # El dataset está compuesto principalmente por celebridades de cine y TV occidental. Esto introduce sesgos demográficos notables:
-# - **Género**: predominio femenino (el dataset está diseñado como "beauty dataset").
 # - **Edad**: adultos jóvenes predominantes.
 # - **Tono de piel**: infra-representación de tonos oscuros.
 #
