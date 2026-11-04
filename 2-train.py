@@ -370,7 +370,8 @@ print(f"Número de clases: {NUM_CLASSES}")
 
 
 # %% [markdown]
-# **Decisiones de diseño (modelo simplificado):**
+# **Modelos Custom:**
+# Vamos a probar dos variantes:
 # - **A:** CNN custom con bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
 #   Liviana y rápida.
 # - **A2:** ResNet con *bottlenecks* (1×1 → 3×3 → 1×1) + *skip connections*.
@@ -389,6 +390,8 @@ print(f"Número de clases: {NUM_CLASSES}")
 # no se agregan épocas. Una interrupción a mitad de época obliga a repetirla.
 # Si solo existe el mejor modelo, se recuperan sus pesos y se reinician el
 # optimizador y el historial. No se restaura la secuencia aleatoria exacta.
+#
+# Usamos el optimizador Adam con valores típicos bien probados: learning rate inicial de 1e-3 y weight decay de 1e-4. El scheduler reduce el learning rate cuando la métrica de validación deja de mejorar.
 
 # %%
 def train_model(model, model_pth, ckpt_path, epochs=EPOCHS, patience=PATIENCE):
@@ -541,11 +544,15 @@ results = {}
 # %%
 # Entrenar A
 model = ModelA(NUM_CLASSES).to(DEVICE)
-desc = "FaceCNN 32→64→128 | emb=128"
+
+n_params = sum(p.numel() for p in model.parameters())
+n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+desc = "32→64→128 | emb=128"
 suffix = "custom_cnn"
-print("=" * 70)
-print(f"EXPERIMENTO A: {desc}")
-print("=" * 70)
+
+print(f"Modelo Custom A: {desc}")
+print(f"Parámetros entrenables: {n_trainable:,}")
 
 model_pth = MODEL_DIR / f"{suffix}_best.pth"
 ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
@@ -606,14 +613,19 @@ del model, dummy
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
 
+# %% [markdown]
+# Observamos que el entrenamiento fue estable aunque se evidencian signos de sobreajuste. Sin embargo obtuvo un accuracy de 0.67 sobre el conjunto de validación, teniendo en cuenta lo simple de la arquitectura lo consideramos un resultado aceptable.
+
 # %%
 # Entrenar A2
 model = ModelA2(NUM_CLASSES).to(DEVICE)
-desc = "FaceResNet Bottleneck (1,1,1) | emb=128"
+n_params = sum(p.numel() for p in model.parameters())
+n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+desc = "Bloques residuales 32→64→128 | emb=128"
 suffix = "custom_cnn_A2"
-print("=" * 70)
-print(f"EXPERIMENTO A2: {desc}")
-print("=" * 70)
+
+print(f"Modelo Custom A2: {desc}")
+print(f"Parámetros entrenables: {n_trainable:,}")
 
 model_pth = MODEL_DIR / f"{suffix}_best.pth"
 ckpt_path = MODEL_DIR / f"{suffix}_checkpoint.pt"
@@ -675,6 +687,9 @@ if torch.cuda.is_available():
     torch.cuda.empty_cache()
 
 # %% [markdown]
+# Observamos que A2 tuvo un sobreajuste aun más marcado que A, produciendo que el entrenamiento termine más temprano debido al early stopping. Reforzamos la idea de que una arquitectura tan chica no es suficiente para reconocer caras, por lo que la red aprende a memorizar los ejemplos de entrenamiento en lugar de generalizar.
+
+# %% [markdown]
 # ### Comparación de los experimentos ejecutados
 #
 # La tabla se construye con los resultados de A y A2. Se selecciona el
@@ -685,10 +700,6 @@ if torch.cuda.is_available():
 # desde CPU. La medición en GPU no sustituye la evaluación de costo en CPU.
 
 # %%
-print("\n" + "=" * 70)
-print("RESUMEN PARCIAL (entrenamiento)")
-print("=" * 70)
-
 summary_train = pl.DataFrame(
     {
         "exp": list(results.keys()),
@@ -718,6 +729,8 @@ val_embs, val_labs = extract_embeddings(val_loader, model, DEVICE)
 test_embs, test_labs = extract_embeddings(test_loader, model, DEVICE)
 print(f"\nEmbeddings cargados del ganador ({best_exp}) — test: {test_embs.shape}")
 print(f"Norma L2 promedio (test): {np.linalg.norm(test_embs, axis=1).mean():.4f}")
+
+
 # %% [markdown]
 # ## 3.2 Modelo B — InsightFace / ArcFace (preentrenado)
 #
@@ -1343,3 +1356,8 @@ for name in metrics:
 comp_df = pl.DataFrame(comp_data)
 display(comp_df)
 
+
+# %% [markdown]
+# Nuestra elección es quedarnos con ArcFace, es un estándar dificil de superar. Si bien nuestro modelo custom es mucho más liviano (~300x) y más rápido (~56x), la abismal diferencia de parametros (~360x más en ArcFace vs nuestro modelo A) y la complejidad de la arquitectura de ArcFace le permite generalizar mucho mejor, obteniendo un accuracy de 0.99 sobre el conjunto de validación y 0.98 sobre el conjunto de test.
+#
+# Además de la arquitectura, la gran ventaja de ArcFace es que fue entrenado con millones de imágenes y utilizando metric learning frente a nuestro modelo A rudimentario entrenado usando softmax/cross-entropy con un dataset muy pequeño.
