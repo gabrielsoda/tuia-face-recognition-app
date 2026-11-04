@@ -879,18 +879,23 @@ def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
     gallery_ids = unique[n_unknown:]
     unknown_ids = unique[:n_unknown]
 
+    gallery_indices = {}
+    query_indices = []
     gal_embs, gal_labs = [], []
     qry_embs, qry_labs, qry_is_known = [], [], []
     for lab in gallery_ids:
         idxs = np.where(labels == lab)[0]
         rng.shuffle(idxs)
+        gallery_indices[lab] = idxs[0]
         gal_embs.append(embs[idxs[0]])
         gal_labs.append(lab)
         for q in idxs[1:]:
+            query_indices.append(q)
             qry_embs.append(embs[q]); qry_labs.append(lab); qry_is_known.append(True)
     for lab in unknown_ids:
         idxs = np.where(labels == lab)[0]
         for q in idxs:
+            query_indices.append(q)
             qry_embs.append(embs[q]); qry_labs.append(lab); qry_is_known.append(False)
 
     gal_arr = np.array(gal_embs)
@@ -954,6 +959,8 @@ def evaluate_identification(embs, labels, unknown_frac=0.20, seed=42, thr=None):
         "n_unknown_queries": int(unknown_mask.sum()),
         "best_sims": best_sim,
         "query_labels": qry_labs_arr,
+        "query_indices": np.array(query_indices),
+        "gallery_indices": gallery_indices,
         "pred_labels": pred_labels,
         "known_mask": known_mask,
         "unknown_rejection_rate": unknown_rejection_rate,
@@ -1179,12 +1186,65 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
     id_res = evaluate_identification(embs, labs, unknown_frac=0.20, seed=42, thr=thr)
     eval_results[name]["identification"] = id_res
     print(f"\n{name} — Identificación con umbral={thr:.4f}:")
+    print(f"  Precision macro           = {id_res['precision_macro']:.4f}")
+    print(f"  Recall macro              = {id_res['recall_macro']:.4f}")
     print(f"  Top-1 accuracy (known)   = {id_res['top1_acc']:.4f}")
     print(f"  Unknown rejection rate   = {id_res['unknown_rejection_rate']:.4f}")
     print(f"  Unknown false acceptance = {id_res['unknown_fa_rate']:.4f}")
 
+# Confusiones entre identidades registradas, excluyendo rechazos como unknown.
+for name, result in eval_results.items():
+    ident = result["identification"]
+    actual = ident["query_labels"]
+    predicted = ident["pred_labels"]
+    confused = ident["known_mask"] & (predicted != -1) & (predicted != actual)
+    pairs = Counter(zip(actual[confused], predicted[confused])).most_common(5)
+    result["frequent_confusions"] = pairs
+    print(f"\n{name} — Confusiones más frecuentes entre identidades registradas:")
+    for (true_label, predicted_label), count in pairs:
+        true_name, predicted_name = label_encoder.inverse_transform([true_label, predicted_label])
+        print(f"  {true_name} → {predicted_name}: {count}")
+    if not pairs:
+        print("  Sin confusiones entre identidades registradas.")
+
+
 # %% [markdown]
 # **Identificación cuantitativa.** Con los umbrales fijados en validación, ArcFace identificó correctamente el 99,82 % de las consultas de personas registradas y rechazó el 82,33 % de las consultas fuera de galería. La CNN A acertó el 26,96 % de las consultas registradas y aceptó todas las consultas fuera de galería. El umbral se obtiene con pares individuales y aquí se aplica a la mayor similitud contra la galería.
+#
+# El resumen de confusiones cuenta las asignaciones incorrectas entre personas registradas. Los rechazos y las consultas fuera de galería se interpretan por separado.
+
+# %%
+# Una consulta y la foto de galería que produjo cada confusión frecuente.
+for name, result in eval_results.items():
+    pairs = result["frequent_confusions"]
+    if not pairs:
+        print(f"{name}: sin confusiones entre personas registradas para ilustrar.")
+        continue
+
+    ident = result["identification"]
+    fig, axes = plt.subplots(len(pairs), 2, figsize=(7, 2.3 * len(pairs)),
+                             squeeze=False, layout="constrained")
+    fig.suptitle(f"Ejemplos de confusión en identificación — {name}")
+    for row, ((actual, predicted), count) in enumerate(pairs):
+        matches = np.flatnonzero(
+            (ident["query_labels"] == actual) & (ident["pred_labels"] == predicted)
+        )
+        query = matches[0]
+        query_image, _ = test_ds[ident["query_indices"][query]]
+        gallery_image, _ = test_ds[ident["gallery_indices"][predicted]]
+        actual_name, predicted_name = label_encoder.inverse_transform([actual, predicted])
+        score = ident["best_sims"][query]
+
+        axes[row, 0].imshow(query_image.permute(1, 2, 0).numpy())
+        axes[row, 0].set_title(f"Consulta: {actual_name}", fontsize=9)
+        axes[row, 1].imshow(gallery_image.permute(1, 2, 0).numpy())
+        axes[row, 1].set_title(
+            f"Galería: {predicted_name}\nCoseno: {score:.3f} · {count} casos", fontsize=9
+        )
+        for ax in axes[row]:
+            ax.axis("off")
+    plt.show()
+
 
 # %% [markdown]
 # ### d) Clustering de embeddings
@@ -1308,6 +1368,10 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 
 # %% [markdown]
 # **Lectura de los pares de error.** La primera fila muestra fotos de la misma persona cuyo puntaje quedó por debajo del umbral. La segunda muestra fotos de personas distintas cuyo puntaje alcanzó o superó el umbral. Se muestran los errores con puntajes más alejados del corte en cada dirección, por lo que la grilla sirve para inspeccionar casos individuales.
+#
+# En la CNN A, el falso negativo de **−0,230** enfrenta una toma casi frontal con una de perfil. También hay pares con cambios marcados de expresión e iluminación. En ArcFace, el par positivo de **0,221** combina un rostro frontal con otro girado y con la mirada hacia abajo. El cambio de pose puede dificultar la comparación en ambos casos.
+#
+# Entre los falsos positivos de ArcFace, el par de **0,291** muestra dos retratos con cabello rubio, maquillaje y encuadres similares. El parecido visual es una hipótesis para inspeccionar ese caso.
 
 # %% [markdown]
 # ### f) Costo computacional
@@ -1389,6 +1453,8 @@ metric_rows = [
     ("TAR@FAR=1e-3", "verification", "tar_far_1e-3", ".4f"),
     ("Top-1 con umbral", "identification", "top1_acc", ".4f"),
     ("Top-5 sin umbral", "identification", "top5_acc", ".4f"),
+    ("Precision macro", "identification", "precision_macro", ".4f"),
+    ("Recall macro", "identification", "recall_macro", ".4f"),
     ("F1 macro", "identification", "f1_macro", ".4f"),
     ("Rechazo fuera de galería", "identification", "unknown_rejection_rate", ".4f"),
     ("Silhouette (identidades)", "clustering", "silhouette", ".3f"),
