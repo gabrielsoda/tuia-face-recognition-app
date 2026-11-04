@@ -14,13 +14,17 @@
 # ---
 
 # %% [markdown]
-# # Notebook de documentacion, tratamiento datos y entrenamiento
+# # Notebook 1 — Exploración y preprocesamiento facial
+#
+# Preparamos los datos del TP de reconocimiento facial a partir de Pins Face Recognition. Exploramos el balance de identidades, las resoluciones y la calidad visual. Luego usamos SCRFD para detectar el rostro principal, aplicamos filtros de calidad y revisión manual, y alineamos los recortes a 112 × 112 con cinco puntos faciales.
+#
+# El conjunto balanceado conserva 100 imágenes originales por cada una de 100 identidades. Exploramos sus embeddings con ArcFace y generamos los splits estratificados. El aumento se aplica solo a entrenamiento. La notebook exporta los recortes en `output/aligned_112/` y los manifiestos `output/train.csv`, `output/val.csv` y `output/test.csv` que consume la notebook 2.
 #
 
 # %% [markdown]
 # ## Equipo
-# - Alumno 1 : **Alejandro Armas**
-# - Alumno 2 : **Gabriel Soda**
+# - **Alejandro Armas**
+# - **Gabriel Soda**
 
 # %%
 import warnings
@@ -470,7 +474,7 @@ plt.show()
 # %% [markdown]
 # ## Calibración del umbral de detección
 #
-# Prueba sobre un subsample del ~25% de las imágenes (4225 imágenes) para determinar el umbral de detección que mejor clasifica las imágenes en 0, 1 o 2+ rostros detectados. Se inspeccionan visualmente los falsos positivos y negativos para ajustar el umbral.
+# Buscamos un corte para conservar el rostro principal y reducir las detecciones adicionales que podrían dificultar su selección. Sobre 4.225 imágenes que pasaron el primer filtro, muestreadas con semilla 42, ejecutamos SCRFD a 160 × 160 con un corte inicial de 0,10. Reutilizamos esas detecciones para contar imágenes con 0, 1 o 2 o más cajas aceptadas en cada umbral entre 0,20 y 0,80. Las grillas permiten inspeccionar ejemplos de cajas aceptadas y descartadas.
 
 # %%
 SUBSAMPLE_SIZE = 4225
@@ -663,7 +667,9 @@ def show_threshold_samples(
 show_threshold_samples(0.60, "2+", detection_cache, n=25)
 
 # %% [markdown]
-# Decidimos quedarnos con el umbral 0.6 para la detección de rostros, buen balance
+# Elegimos **0,60** porque fue el mayor umbral ensayado que conservó al menos una detección en las 4.225 imágenes. A 0,50, 26 fotos tenían dos o más detecciones. A 0,60, esa cifra bajó a 19 y 4.206 quedaron con una sola detección. A 0,70 hubo nueve fotos con dos o más detecciones, pero 13 se quedaron sin ninguna.
+#
+# Los conteos describen la salida del detector en esta muestra. Algunas cajas adicionales pueden corresponder a rostros reales. Harían falta anotaciones de las cajas para medir precisión y recall. El corte de 0,60 se aplica a la confianza de SCRFD, antes de filtrar por tamaño o comparar identidades.
 
 # %%
 DETECTION_THRESHOLD = 0.6
@@ -1271,7 +1277,9 @@ print(
 # %% [markdown]
 # ## Clustering exploratorio
 #
-# Extraemos embeddings con **ArcFace** (modelo preentrenado de `buffalo_l`) sobre el **subset balanceado**: 100 imágenes aceptadas por identidad. Proyectamos a 2D con **t-SNE** y comparamos clusters K-Means contra las etiquetas reales (ARI, NMI, silhouette). El objetivo no es decorar, sino detectar identidades mal etiquetadas, outliers o sub-clusters por condiciones de captura.
+# Extraemos embeddings ArcFace del conjunto balanceado. Usamos **t-SNE** para visualizar en 2D qué imágenes quedan próximas en el espacio de embeddings y así localizar ejemplos para inspección manual, como puntos aislados o vecindarios con etiquetas mezcladas. Proyectamos una muestra aleatoria de hasta 2.000 embeddings para acotar el costo y mantener legible la grilla, con semilla 42, perplejidad 30 e inicialización PCA. Interpretamos las vecindades locales y evitamos atribuir significado a la distancia entre grupos en el plano. [Van der Maaten y Hinton, 2008](https://jmlr.org/papers/v9/vandermaaten08a.html)
+#
+# Por separado, ajustamos K-Means sobre todos los embeddings disponibles en su espacio original y comparamos sus asignaciones con las etiquetas de identidad mediante ARI y NMI. Silhouette mide la separación y cohesión de esos clusters en el mismo espacio.
 
 # %%
 from sklearn.cluster import KMeans
@@ -1458,10 +1466,7 @@ display(scatter)
 # %% [markdown]
 # ### Interpretación del clustering
 #
-# - **ARI y NMI cercanos a 1** indican que los embeddings ya separan bien las identidades.
-# - **Silhouette** cuantifica qué tan cohesionados están los clusters.
-# - Identidades que se mezclan en el t-SNE suelen ser personas con parecido facial real o condiciones de captura similares (iluminación, pose).
-# - Outliers (puntos lejos de su grupo) pueden ser errores de etiquetado o imágenes de muy baja calidad.
+# K-Means obtuvo **ARI 0,956**, **NMI 0,993** y **silhouette 0,268**. Los dos primeros valores muestran alta concordancia con las etiquetas. El silhouette indica una separación geométrica más modesta. Un punto aislado o una mezcla de etiquetas en t-SNE sirve para seleccionar fotos que conviene revisar. Para atribuirlos a pose, iluminación o un error de etiqueta hace falta inspeccionar esas fotos.
 
 # %% [markdown]
 # ## Data augmentation (offline)
