@@ -383,6 +383,10 @@ print(f"Número de clases: {NUM_CLASSES}")
 # - **Dropout** Para regularizar y evitar sobreajuste
 # - **BatchNorm** Para suavizar yestabilizar el entrenamiento
 # - **L2-normalización** Para asegurar que los embeddings tengan magnitud unitaria y facilitar la comparación mediante métricas de similitud.
+#
+# Los bloques con conexión residual de A2 se inspiran en ResNet. La conexión suma al bloque una ruta directa desde su entrada, con proyección cuando cambian las dimensiones. [He et al., 2016](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html)
+#
+# En entrenamiento, BatchNorm usa estadísticas del minibatch para normalizar las activaciones. Durante la inferencia usa las estadísticas acumuladas. La incorporamos para facilitar la optimización de ambas CNN. [Ioffe y Szegedy, 2015](https://proceedings.mlr.press/v37/ioffe15.html)
 
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
@@ -752,6 +756,8 @@ print(f"Norma L2 promedio (test): {np.linalg.norm(test_embs, axis=1).mean():.4f}
 # - **Datos de entrenamiento:** millones de rostros públicos (MS1M / WebFace).
 # - **Dimensión del embedding:** 512.
 # - **Licencia:** uso no comercial / investigación (InsightFace).
+#
+# ArcFace incorpora un margen angular en la función de pérdida durante el entrenamiento. Ese margen busca que los embeddings de una misma identidad queden próximos y que los de identidades distintas se separen. En el TP usamos el extractor preentrenado de `buffalo_l` para obtener esos embeddings. [Deng et al., 2019](https://openaccess.thecvf.com/content_CVPR_2019/html/Deng_ArcFace_Additive_Angular_Margin_Loss_for_Deep_Face_Recognition_CVPR_2019_paper.html)
 
 # %%
 face_analysis = FaceAnalysis(name="buffalo_l", allowed_modules=["detection","recognition"])
@@ -1187,6 +1193,8 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
 # para evaluar qué modelo separa mejor las identidades en el espacio de embeddings.
 # Silhouette usa las identidades reales. ARI y NMI comparan esas identidades
 # con las asignaciones de K-Means. Las métricas usan los embeddings originales.
+#
+# Usamos t-SNE como visualización de vecindades locales entre rostros, siguiendo el enfoque de la clase de reconocimiento facial. Las métricas de clustering se calculan sobre los embeddings originales. [Van der Maaten y Hinton, 2008](https://jmlr.org/papers/v9/vandermaaten08a.html)
 
 # %%
 from sklearn.decomposition import PCA
@@ -1410,3 +1418,14 @@ with pl.Config(tbl_rows=-1):
 # ### Licencia de los modelos preentrenados
 #
 # En cuanto a licencia, ArcFace es de uso no comercial / investigación, como esto es un proyecto académico no representa un problema.
+#
+# Fuente de los términos de uso de los pesos preentrenados. [Documentación oficial de InsightFace](https://github.com/deepinsight/insightface/tree/master/python-package#license)
+
+# %% [markdown]
+# # Referencias
+#
+# - He et al. (2016). [Deep Residual Learning for Image Recognition](https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html). CVPR.
+# - Ioffe y Szegedy (2015). [Batch Normalization: Accelerating Deep Network Training by Reducing Internal Covariate Shift](https://proceedings.mlr.press/v37/ioffe15.html). ICML.
+# - Deng et al. (2019). [ArcFace: Additive Angular Margin Loss for Deep Face Recognition](https://openaccess.thecvf.com/content_CVPR_2019/html/Deng_ArcFace_Additive_Angular_Margin_Loss_for_Deep_Face_Recognition_CVPR_2019_paper.html). CVPR.
+# - Van der Maaten y Hinton (2008). [Visualizing Data using t-SNE](https://jmlr.org/papers/v9/vandermaaten08a.html). JMLR.
+# - InsightFace. [Licencia de los modelos preentrenados](https://github.com/deepinsight/insightface/tree/master/python-package#license).

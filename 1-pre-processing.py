@@ -898,6 +898,8 @@ else:
 # ## Detección, landmarks y alineación con SCRFD
 #
 # A continuación visualizamos el pipeline `detectar → validar → alinear` sobre las imágenes que pasaron todas las reglas de calidad.
+#
+# SCRFD se diseñó para equilibrar precisión y costo de detección. En este flujo aprovechamos que la variante incluida en InsightFace devuelve la caja y los cinco puntos faciales que usamos para alinear el recorte. [Guo et al., 2022](https://openreview.net/forum?id=RhB1AdoFfGE)
 
 # %%
 # Antes/después: usamos los 5 landmarks almacenados por SCRFD para alinear a FACE_SIZE.
@@ -1822,3 +1824,15 @@ display(pl.from_dicts(aligned_stats))
 #
 # ### Licencias de modelos preentrenados
 # Los modelos de InsightFace (ArcFace, buffalo_l) se distribuyen bajo licencia de **uso no comercial / investigación**. Su uso en una aplicación comercial requeriría acuerdos de licenciamiento adicionales.
+#
+# La ficha del dataset describe las imágenes como recortes obtenidos de Pinterest y lista CC0 como licencia del dataset publicado. [Pins Face Recognition, Kaggle](https://www.kaggle.com/hereisburak/pins-face-recognition)
+
+# %% [markdown]
+# # Referencias
+#
+# - Burak. [Pins Face Recognition](https://www.kaggle.com/hereisburak/pins-face-recognition). Kaggle.
+# - Guo et al. (2022). [Sample and Computation Redistribution for Efficient Face Detection](https://openreview.net/forum?id=RhB1AdoFfGE). ICLR.
+# - Deng et al. (2019). [ArcFace: Additive Angular Margin Loss for Deep Face Recognition](https://openaccess.thecvf.com/content_CVPR_2019/html/Deng_ArcFace_Additive_Angular_Margin_Loss_for_Deep_Face_Recognition_CVPR_2019_paper.html). CVPR.
+# - Van der Maaten y Hinton (2008). [Visualizing Data using t-SNE](https://jmlr.org/papers/v9/vandermaaten08a.html). JMLR.
+# - Argentina (2000). [Ley 25.326 de Protección de los Datos Personales](https://www.argentina.gob.ar/normativa/nacional/ley-25326-64790/actualizacion).
+# - InsightFace. [Licencia de los modelos preentrenados](https://github.com/deepinsight/insightface/tree/master/python-package#license).
