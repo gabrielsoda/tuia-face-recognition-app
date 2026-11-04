@@ -1374,7 +1374,8 @@ for name, result in eval_results.items():
     comp_data[label] = [
         format(result[section][key], fmt) for _, section, key, fmt in metric_rows
     ]
-display(pl.DataFrame(comp_data))
+with pl.Config(tbl_rows=-1):
+    display(pl.DataFrame(comp_data))
 
 # %% [markdown]
 # Elegimos ArcFace para la aplicación por su desempeño en identificación.
