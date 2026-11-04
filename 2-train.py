@@ -1164,13 +1164,17 @@ for name, test_e, test_l, val_e, val_l in [
 # Calibramos el umbral `SIMILARITY_THRESHOLD` sobre el split de validación,
 # buscando el punto EER (igual error de falsos positivos y falsos negativos).
 # También reportamos TAR@FAR=1e-2 como referencia.
+#
+# Al subir el umbral, se aceptan menos pares de personas distintas (baja la FAR) y se rechazan más pares de una misma persona (sube la FRR). Con 600 pares de cada tipo en validación, elegimos para cada modelo el punto disponible donde ambas tasas quedan más cerca. Para ArcFace, el umbral resultante es **0,2231**, el mismo que se usa en los ejemplos de configuración de la app.
 
 # %%
 thresholds = {}
+validation_scores = {}
 for name, embs, labs in [("CNN custom", val_embs, val_labs),
                           ("InsightFace", insight_val_embs, insight_val_labs)]:
     sp, sn, _, _ = build_pairs(embs, labs, n_pos=600, n_neg=600, rng_seed=42)
     res = evaluate_verification(sp, sn)
+    validation_scores[name] = (sp, sn)
     thresholds[name] = res["eer_thr"]
     eval_results[name]["threshold"] = thresholds[name]
     print(f"\n{name} (validación):")
@@ -1206,6 +1210,25 @@ for name, result in eval_results.items():
         print(f"  {true_name} → {predicted_name}: {count}")
     if not pairs:
         print("  Sin confusiones entre identidades registradas.")
+
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True, layout="constrained")
+for ax, (name, (positive, negative)) in zip(axes, validation_scores.items()):
+    scores = np.unique(np.concatenate([positive, negative, [-1.0, 1.0]]))
+    far = 1 - np.searchsorted(np.sort(negative), scores) / len(negative)
+    frr = np.searchsorted(np.sort(positive), scores) / len(positive)
+    threshold = thresholds[name]
+
+    ax.step(scores, far, where="pre", label="FAR · pares distintos aceptados")
+    ax.step(scores, frr, where="pre", label="FRR · pares iguales rechazados")
+    ax.axvline(threshold, color="black", linestyle="--", label=f"Umbral = {threshold:.4f}")
+    ax.set(title=name, xlabel="Umbral de similitud coseno", xlim=(-1, 1))
+    ax.grid(alpha=0.2)
+    ax.legend(fontsize=8)
+axes[0].set_ylabel("Proporción de pares")
+fig.suptitle("Calibración del umbral sobre pares de validación")
+plt.show()
 
 
 # %% [markdown]
