@@ -1365,3 +1365,5 @@ display(comp_df)
 # Nuestra elección es quedarnos con ArcFace, es un estándar dificil de superar. Si bien nuestro modelo custom es mucho más liviano (~300x) y más rápido (~56x), la abismal diferencia de parametros (~360x más en ArcFace vs nuestro modelo A) y la complejidad de la arquitectura de ArcFace le permite generalizar mucho mejor, obteniendo un accuracy de 0.99 sobre el conjunto de validación y 0.98 sobre el conjunto de test.
 #
 # Además de la arquitectura, la gran ventaja de ArcFace es que fue entrenado con millones de imágenes y utilizando metric learning frente a nuestro modelo A rudimentario entrenado usando softmax/cross-entropy con un dataset muy pequeño.
+#
+# En cuanto a licencia, ArcFace es de uso no comercial / investigación, como esto es un proyecto académico no representa un problema.
