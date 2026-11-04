@@ -994,6 +994,9 @@ plt.suptitle("Curvas ROC", fontsize=13)
 plt.tight_layout(); plt.show()
 
 # %% [markdown]
+# **Lectura de los histogramas y las curvas ROC.** En la CNN A, las similitudes de pares de la misma persona y de personas distintas se solapan más. En ArcFace, la ROC se acerca más a la esquina superior izquierda. Sobre los pares de test, el EER baja del 18,50 % con la CNN A al 0,25 % con ArcFace. Esto indica que ArcFace distingue mejor los pares de esta muestra.
+
+# %% [markdown]
 # ### b) Identificación simple con galería visual
 #
 # - 10 identidades "known" del test (3 imágenes registradas cada una).
@@ -1136,6 +1139,9 @@ for name, test_e, test_l, val_e, val_l in [
     simple_identification_demo(test_e, test_l, test_ds, name, thr)
 
 # %% [markdown]
+# **Lectura de la galería.** Los dos modelos reconocieron las cinco consultas de personas registradas. La CNN A asignó las cinco consultas fuera de galería a personas registradas, mientras que ArcFace rechazó las cinco. La grilla muestra ejemplos de cómo se aplica el umbral a la mejor coincidencia de cada consulta.
+
+# %% [markdown]
 # ### c) Elección del umbral con validación
 #
 # Calibramos el umbral `SIMILARITY_THRESHOLD` sobre el split de validación,
@@ -1166,6 +1172,9 @@ for name, embs, labs in [("CNN custom", test_embs, test_labs),
     print(f"  Top-1 accuracy (known)   = {id_res['top1_acc']:.4f}")
     print(f"  Unknown rejection rate   = {id_res['unknown_rejection_rate']:.4f}")
     print(f"  Unknown false acceptance = {id_res['unknown_fa_rate']:.4f}")
+
+# %% [markdown]
+# **Identificación cuantitativa.** Con los umbrales fijados en validación, ArcFace identificó correctamente el 99,82 % de las consultas de personas registradas y rechazó el 82,33 % de las consultas fuera de galería. La CNN A acertó el 26,96 % de las consultas registradas y aceptó todas las consultas fuera de galería. El umbral se obtiene con pares individuales y aquí se aplica a la mayor similitud contra la galería.
 
 # %% [markdown]
 # ### d) Clustering de embeddings
@@ -1235,6 +1244,11 @@ display(alt.hconcat(*tsne_plots))
 
 
 # %% [markdown]
+# **Lectura de t-SNE y clustering.** Cada punto representa un rostro de test y el color indica su identidad. En ArcFace se distinguen agrupamientos locales de un mismo color con mayor claridad, mientras que en la CNN A se mezclan más colores. Leemos la proyección a partir de esas vecindades. Las métricas de la tabla se calculan en el espacio original de embeddings.
+#
+# ArcFace obtuvo un silhouette por identidad de **0,290**, frente a **0,004** de la CNN A. Las asignaciones de K-Means también coincidieron más con las identidades en ArcFace. El ARI pasó de **0,192** a **0,975** y el NMI de **0,620** a **0,996**.
+
+# %% [markdown]
 # ### e) Análisis de errores
 #
 # Mostramos ejemplos de falsos positivos (pares negativos con alta similitud)
@@ -1279,6 +1293,9 @@ def show_error_pairs(embs, labs, ds, name, thr, n_examples=4):
 for name, embs, labs in [("CNN custom", test_embs, test_labs),
                           ("InsightFace", insight_test_embs, insight_test_labs)]:
     show_error_pairs(embs, labs, test_ds, name, thresholds[name], n_examples=4)
+
+# %% [markdown]
+# **Lectura de los pares de error.** La primera fila muestra fotos de la misma persona cuyo puntaje quedó por debajo del umbral. La segunda muestra fotos de personas distintas cuyo puntaje alcanzó o superó el umbral. Se muestran los errores con puntajes más alejados del corte en cada dirección, por lo que la grilla sirve para inspeccionar casos individuales.
 
 # %% [markdown]
 # ### f) Costo computacional
@@ -1342,6 +1359,9 @@ cost_df = pl.DataFrame([
     {"modelo": name, **result["cost"]} for name, result in eval_results.items()
 ])
 display(cost_df)
+
+# %% [markdown]
+# **Costo del extractor.** En la medición en CPU, la CNN A tardó **3,54 ms por rostro** y ocupó **0,49 MiB**. ArcFace tardó **62,59 ms por rostro** y ocupó **166,31 MiB**. La comparación muestra el costo adicional del extractor que obtuvo mejores resultados de identificación. La latencia corresponde a un recorte ya preparado.
 
 # %% [markdown]
 # ## 3.4 Comparación y elección final
