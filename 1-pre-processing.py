@@ -475,6 +475,7 @@ plt.show()
 # ## Calibración del umbral de detección
 #
 # Buscamos un corte para conservar el rostro principal y reducir las detecciones adicionales que podrían dificultar su selección. Sobre 4.225 imágenes que pasaron el primer filtro, muestreadas con semilla 42, ejecutamos SCRFD a 160 × 160 con un corte inicial de 0,10. Reutilizamos esas detecciones para contar imágenes con 0, 1 o 2 o más cajas aceptadas en cada umbral entre 0,20 y 0,80. Las grillas permiten inspeccionar ejemplos de cajas aceptadas y descartadas.
+#
 
 # %%
 SUBSAMPLE_SIZE = 4225
@@ -552,7 +553,6 @@ display(tune_df)
 # esperada, no es una predicción. El score es de detección.
 # Ejecutamos el detector con umbral 0,1 y guardamos las detecciones que devuelve.
 # Sobreeso, probamos umbrales más exigentes como 0,3 o 0,6, sin ejecutar nuevamente la red.
-
 
 # %%
 def show_threshold_samples(
@@ -670,6 +670,7 @@ show_threshold_samples(0.60, "2+", detection_cache, n=25)
 # Elegimos **0,60** porque fue el mayor umbral ensayado que conservó al menos una detección en las 4.225 imágenes. A 0,50, 26 fotos tenían dos o más detecciones. A 0,60, esa cifra bajó a 19 y 4.206 quedaron con una sola detección. A 0,70 hubo nueve fotos con dos o más detecciones, pero 13 se quedaron sin ninguna.
 #
 # Los conteos describen la salida del detector en esta muestra. Algunas cajas adicionales pueden corresponder a rostros reales. Harían falta anotaciones de las cajas para medir precisión y recall. El corte de 0,60 se aplica a la confianza de SCRFD, antes de filtrar por tamaño o comparar identidades.
+#
 
 # %%
 DETECTION_THRESHOLD = 0.6
@@ -1271,8 +1272,9 @@ print(
 )
 
 # %% [markdown]
-# Los filtros automáticos dejaron 16.820 imágenes aceptadas. Después de revisar visualmente las imágenes con mútiples rostros, se registraron cuatro selecciones incorrectas. dos ya estaban descartadas por los filtros automáticos y otras dos se excluyeron manualmente, dejando 16.818 imágenes aceptadas.
-# El balanceo reduce esas 16.818 imágenes a 10.000. Se excluyen 190 imágenes al retirar dos identidades con menos de 100 muestras y otras 6.628 por el máximo de 100 imágenes por identidad. Esta última reducción afecta imágenes que superaron tanto los filtros automáticos como la revisión manual.
+# Los filtros automáticos dejaron **16.820 imágenes aceptadas**. La revisión manual excluyó 3 imágenes adicionales y dejó **16.817**.
+#
+# Dos identidades quedaron por debajo del mínimo de 100 imágenes y se excluyeron sus 190 fotos. De las 16.627 imágenes de las identidades conservadas, seleccionamos 10.000 y dejamos 6.627 fuera por el máximo de 100 por identidad.
 
 # %% [markdown]
 # ## Clustering exploratorio
@@ -1469,6 +1471,7 @@ display(scatter)
 # ### Interpretación del clustering
 #
 # K-Means obtuvo **ARI 0,956**, **NMI 0,993** y **silhouette 0,268**. Los dos primeros valores muestran alta concordancia con las etiquetas. El silhouette indica una separación geométrica más modesta. Un punto aislado o una mezcla de etiquetas en t-SNE sirve para seleccionar fotos que conviene revisar. Para atribuirlos a pose, iluminación o un error de etiqueta hace falta inspeccionar esas fotos.
+#
 
 # %% [markdown]
 # ## Data augmentation (offline)
@@ -1540,7 +1543,7 @@ show_augmentations(DATA_DIR / sample_img)
 # %% [markdown]
 # ## Partición de datos (splits)
 #
-# Dividimos en **train / validation / test** estratificados por identidad. Como el objetivo final es **open-set** (verificación con personas no vistas en entrenamiento), esta partición inicial es **closed-set** para entrenar la CNN custom: cada identidad aparece en los tres splits, con imágenes distintas. El escenario open-set se evaluará en la notebook `2-train.ipynb`.
+# Dividimos en **train / validation / test** estratificados por identidad. La partición es **closed-set** para la CNN: cada identidad aparece en los tres splits con fotos distintas. Destinamos el 70 % de las fotos de cada persona al entrenamiento y reservamos dos grupos del mismo tamaño para calibración y evaluación final. La notebook 2 mide el rechazo de personas fuera de galería que sí estuvieron en el entrenamiento de la CNN.
 #
 # Proporciones por identidad: **70% train / 15% validation / 15% test**.
 # Semilla fija (`SEED = 42`) y guardado en CSV para reproducibilidad.
@@ -1767,6 +1770,22 @@ for split_name, split_df in [("train", train_df), ("val", val_df), ("test", test
     )
 
 display(pl.from_dicts(aligned_stats))
+
+# %% [markdown]
+# ## Conclusión del preprocesamiento
+#
+# Elegimos Pins Face Recognition porque sus etiquetas por persona y la cantidad de fotos por identidad permiten entrenar una CNN y reservar fotos distintas para validación y test. Las variaciones de pose, expresión, iluminación y oclusión aportan ejemplos de condiciones de captura que la aplicación puede encontrar. Como el conjunto está centrado en celebridades, los resultados describen ese conjunto y su transferencia a otras poblaciones o condiciones de captura requiere evaluación adicional.
+#
+# Tras la limpieza y el balanceo conservamos 10.000 fotos originales de 100 identidades. Exportamos recortes alineados a 112 × 112 y un manifiesto por split para que la notebook 2 reutilice la misma partición.
+#
+# | Split | Identidades | Originales | Aumentos | Total de recortes |
+# | --- | ---: | ---: | ---: | ---: |
+# | Train | 100 | 7.000 | 7.000 | 14.000 |
+# | Validación | 100 | 1.500 | 0 | 1.500 |
+# | Test | 100 | 1.500 | 0 | 1.500 |
+# | Total | 100 | 10.000 | 7.000 | 17.000 |
+#
+# La auditoría SHA-256 de los 17.000 recortes exportados no encontró hashes exactos compartidos entre splits.
 
 # %% [markdown]
 # ## Ética, privacidad y licencias
