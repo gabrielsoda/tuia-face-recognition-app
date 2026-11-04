@@ -370,15 +370,19 @@ print(f"Número de clases: {NUM_CLASSES}")
 
 
 # %% [markdown]
-# **Modelos Custom:**
-# Vamos a probar dos variantes:
-# - **A:** CNN custom con bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
+# **Modelos Custom**
+#
+# Vamos a probar dos arquitecturas simples:
+# - **A:** CNN custom con 3 bloques conv simples (3×3 + BatchNorm + ReLU + MaxPool).
 #   Liviana y rápida.
 # - **A2:** ResNet con *bottlenecks* (1×1 → 3×3 → 1×1) + *skip connections*.
 #   Permite entrenar más profundo sin desvanecimiento de gradientes.
 #
-# - **Global Average Pooling**, **Dropout**, **BatchNorm** en embedding y
-#   **L2-normalización** son comunes a ambas variantes.
+# Para ambas variantes usamos:
+# - **Global Average Pooling** Para generar el embedding de 128 dimensiones a partir de la última capa convolucional
+# - **Dropout** Para regularizar y evitar sobreajuste
+# - **BatchNorm** Para suavizar yestabilizar el entrenamiento
+# - **L2-normalización** Para asegurar que los embeddings tengan magnitud unitaria y facilitar la comparación mediante métricas de similitud.
 
 # %% [markdown]
 # ### 3.1.2 Hiperparámetros y entrenamiento
